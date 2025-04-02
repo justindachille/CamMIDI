@@ -1,0 +1,44 @@
+# CamMIDI Configuration
+camera:
+  index: 0 # Default system webcam. Change if you have multiple cameras.
+  width: 640 # Requested camera width
+  height: 480 # Requested camera height
+
+mediapipe:
+  static_image_mode: false # Process as video stream
+  max_num_hands: 1 # Track only one hand for simpler mapping initially
+  min_detection_confidence: 0.6 # How confident the model needs to be to detect a hand initially
+  min_tracking_confidence: 0.6 # How confident the model needs to be to track the hand frame-to-frame
+  centroid_landmark_id: 0 # Landmark used for x/y control (0=Wrist, 9=Middle Finger MCP are good choices)
+
+midi:
+  # --- IMPORTANT: SET YOUR VIRTUAL MIDI PORT NAME HERE ---
+  # macOS Example: "IAC Driver Bus 1" (Enable in Audio MIDI Setup)
+  # Windows Example: "loopMIDI Port" (Install and run loopMIDI)
+  port_name: "IAC Driver Bus 1"
+  # Smoothing factor for MIDI output. 0.0 = none (responsive, jittery),
+  # approaches 1.0 = heavy smoothing (smooth, delayed). 0.5-0.8 is usually a good range.
+  smoothing_factor: 0.7
+
+# --- Define how hand movements map to MIDI CCs ---
+mappings:
+  - source: centroid_x # Tracks the horizontal position of the centroid_landmark_id
+    channel: 1         # MIDI Channel (1-16)
+    cc: 74             # MIDI Control Change Number (0-127) - e.g., Filter Cutoff
+    invert: false      # false = left-to-right maps low-to-high MIDI value
+  - source: centroid_y # Tracks the vertical position of the centroid_landmark_id
+    channel: 1
+    cc: 71             # e.g., Filter Resonance
+    invert: true       # true = top-to-bottom maps low-to-high MIDI value (common screen coords)
+  # - source: centroid_x # Example: Map X to Pan as well
+  #   channel: 1
+  #   cc: 10             # CC for Pan
+  #   invert: false
+  # --- Add more mappings for other CCs or future sources (like pinch_distance) ---
+
+display:
+  show_window: true      # Show the OpenCV window with visualizations
+  draw_landmarks: true   # Draw the 21 hand points
+  draw_connections: true # Draw lines connecting the points
+  show_fps: true         # Show the Frames Per Second calculation
+  flip_horizontal: true  # Mirror the camera view horizontally (more intuitive)
