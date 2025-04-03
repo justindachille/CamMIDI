@@ -1,44 +1,100 @@
 # CamMIDI Configuration
+#
+# For sources using distances ('curl', 'pinch', 'wrist_z'):
+# - These are sensitive to hand size and camera distance.
+# - Values are often normalized relative to hand size (e.g., wrist-to-middle-MCP distance).
+# - **You MUST calibrate 'min_input' and 'max_input' for your setup!**
+#   Observe the raw values printed in the console or displayed on screen
+#   (you might need to temporarily add prints in mapper.py) to find your working range.
+# - 'invert: True' is common for curls/pinches (small distance = high MIDI value).
+#
+# For sources using angles ('pitch', 'yaw', 'roll', 'spread'):
+# - Values are typically in radians.
+# - Ranges like -pi/2 to +pi/2 (-90 to +90 deg) or 0 to pi/4 (0 to 45 deg) are common starting points.
+# - Calibrate 'min_input' / 'max_input' based on your comfortable range of motion.
+#
+# MIDI:
+# - Set 'port_name' to your virtual MIDI port (e.g., "IAC Driver Bus 1" on macOS, "loopMIDI Port" on Windows).
+#
 camera:
-  index: 0 # Default system webcam. Change if you have multiple cameras.
-  width: 640 # Requested camera width
-  height: 480 # Requested camera height
-
+  index: 0
+  width: 640
+  height: 480
 mediapipe:
-  static_image_mode: false # Process as video stream
-  max_num_hands: 1 # Track only one hand for simpler mapping initially
-  min_detection_confidence: 0.6 # How confident the model needs to be to detect a hand initially
-  min_tracking_confidence: 0.6 # How confident the model needs to be to track the hand frame-to-frame
-  centroid_landmark_id: 0 # Landmark used for x/y control (0=Wrist, 9=Middle Finger MCP are good choices)
-
+  static_image_mode: false
+  max_num_hands: 1
+  min_detection_confidence: 0.6
+  min_tracking_confidence: 0.6
+  centroid_landmark_id: 0
 midi:
-  # --- IMPORTANT: SET YOUR VIRTUAL MIDI PORT NAME HERE ---
-  # macOS Example: "IAC Driver Bus 1" (Enable in Audio MIDI Setup)
-  # Windows Example: "loopMIDI Port" (Install and run loopMIDI)
-  port_name: "IAC Driver Bus 1"
-  # Smoothing factor for MIDI output. 0.0 = none (responsive, jittery),
-  # approaches 1.0 = heavy smoothing (smooth, delayed). 0.5-0.8 is usually a good range.
-  smoothing_factor: 0.7
-
-# --- Define how hand movements map to MIDI CCs ---
+  port_name: IAC Driver Bus 1
+  smoothing_factor: 0.6
 mappings:
-  - source: centroid_x # Tracks the horizontal position of the centroid_landmark_id
-    channel: 1         # MIDI Channel (1-16)
-    cc: 74             # MIDI Control Change Number (0-127) - e.g., Filter Cutoff
-    invert: false      # false = left-to-right maps low-to-high MIDI value
-  - source: centroid_y # Tracks the vertical position of the centroid_landmark_id
-    channel: 1
-    cc: 71             # e.g., Filter Resonance
-    invert: true       # true = top-to-bottom maps low-to-high MIDI value (common screen coords)
-  # - source: centroid_x # Example: Map X to Pan as well
-  #   channel: 1
-  #   cc: 10             # CC for Pan
-  #   invert: false
-  # --- Add more mappings for other CCs or future sources (like pinch_distance) ---
-
+- source: centroid_x
+  channel: 1
+  cc: 74
+  invert: false
+- source: centroid_y
+  channel: 1
+  cc: 71
+  invert: true
+- source: hand_pitch
+  channel: 1
+  cc: 2
+  invert: false
+  min_input: 0
+  max_input: 3.141592653589793
+- source: hand_yaw
+  channel: 1
+  cc: 3
+  invert: false
+  min_input: -1.5707963267948966
+  max_input: 1.5707963267948966
+- source: hand_roll
+  channel: 1
+  cc: 10
+  invert: false
+  min_input: -1.5707963267948966
+  max_input: 1.5707963267948966
+- source: index_angle_curl
+  channel: 1
+  cc: 4
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: middle_angle_curl
+  channel: 1
+  cc: 5
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: ring_angle_curl
+  channel: 1
+  cc: 6
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: pinky_angle_curl
+  channel: 1
+  cc: 9
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: thumb_angle_curl
+  channel: 1
+  cc: 11
+  invert: true
+  min_input: 1.8
+  max_input: 3.0
+- source: thumb_index_pinch
+  channel: 1
+  cc: 1
+  invert: true
+  min_input: 0.02
+  max_input: 0.25
 display:
-  show_window: true      # Show the OpenCV window with visualizations
-  draw_landmarks: true   # Draw the 21 hand points
-  draw_connections: true # Draw lines connecting the points
-  show_fps: true         # Show the Frames Per Second calculation
-  flip_horizontal: true  # Mirror the camera view horizontally (more intuitive)
+  show_window: true
+  draw_landmarks: true
+  draw_connections: true
+  show_fps: true
+  flip_horizontal: true

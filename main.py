@@ -18,9 +18,11 @@ def main():
     cap = cv2.VideoCapture(config['camera']['index'])
     if not cap.isOpened():
         print(f"Error: Could not open camera index {config['camera']['index']}.")
+        midi_sender.close() # Close MIDI port if camera fails
+        tracker.close()
         return
 
-    # Attempt to set camera resolution (may be ignored by driver)
+    # Attempt to set camera resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config['camera']['width'])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config['camera']['height'])
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -30,13 +32,19 @@ def main():
 
     if config['display']['show_window']:
         cv2.namedWindow("CamMIDI Output", cv2.WINDOW_NORMAL)
+        # Resize based on actual capture size initially
         cv2.resizeWindow("CamMIDI Output", actual_width, actual_height)
 
 
     pTime = 0 # Previous time for FPS calculation
 
     print("\nStarting CamMIDI loop. Press 'Q' in the output window to quit.")
-    print("Ensure FL Studio (or other DAW) is configured to receive MIDI from:", config['midi']['port_name'])
+    print("Ensure your DAW is configured to receive MIDI from:", config['midi']['port_name'])
+    print("---")
+    print("CALIBRATION NOTE: For distance/angle sources (curl, pinch, orientation, z),")
+    print("you MUST adjust 'min_input' and 'max_input' in config.yaml for your setup!")
+    print("---")
+
 
     # --- Main Loop ---
     try:
@@ -47,11 +55,12 @@ def main():
                 time.sleep(0.5) # Avoid busy-looping on error
                 continue
 
-            # 1. Track Hands
+            loop_start_time = time.time() # For detailed timing if needed
+
+            # 1. Track Hands & Calculate Metrics
             processed_frame, tracking_data = tracker.process_frame(frame)
 
             # 2. Map Tracking Data to MIDI
-            # Pass actual frame dimensions for accurate scaling
             midi_map = mapper.calculate_midi(tracking_data, actual_width, actual_height)
 
             # 3. Send MIDI Messages
@@ -61,32 +70,36 @@ def main():
 
             # 4. Visual Feedback
             if config['display']['show_window']:
-                display_frame = processed_frame.copy()
+                display_frame = processed_frame.copy() # Work on a copy
 
                 # Draw tracking visuals (landmarks, etc.)
                 display_frame = tracker.draw_visuals(display_frame, tracking_data)
 
                 # Calculate and display FPS
+                cTime = time.time()
+                fps = 1 / (cTime - pTime) if (cTime - pTime) > 0 else 0
+                pTime = cTime
+
                 if config['display']['show_fps']:
-                    cTime = time.time()
-                    fps = 1 / (cTime - pTime) if (cTime - pTime) > 0 else 0
-                    pTime = cTime
                     cv2.putText(display_frame, f"FPS: {int(fps)}", (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                 # Display mapped MIDI values on screen
                 y_offset = 60
                 for (ch, cc), val in midi_map.items():
-                     # Find corresponding mapping label if possible (for display only)
+                     # Find corresponding mapping details for display
                      label = f"Ch{ch} CC{cc}"
+                     source_name = "Unknown"
                      for m in config.get('mappings', []):
                          if m['channel'] == ch and m['cc'] == cc:
-                              label = f"{m['source']} -> {label}"
-                              break
+                              source_name = m['source']
+                              label = f"{source_name} -> Ch{ch} CC{cc}"
+                              break # Simple: take the first match if multiple map to same CC
+
                      text = f"{label}: {val}"
                      cv2.putText(display_frame, text, (10, y_offset),
-                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
-                     y_offset += 20
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1) # Smaller font
+                     y_offset += 18 # Smaller spacing
 
 
                 cv2.imshow("CamMIDI Output", display_frame)
@@ -96,7 +109,6 @@ def main():
             if key == ord('q'):
                 print("Exit key pressed.")
                 break
-            # Add other keybinds here if needed (e.g., recalibrate, change mode)
 
     except KeyboardInterrupt:
          print("Keyboard interrupt received.")
