@@ -1,127 +1,547 @@
+# main.py
 import cv2
 import time
 import numpy as np
+import collections
+import argparse
+import warnings
 
-from config_loader import load_config
+# Import config_loader functions directly
+from config_loader import load_config, save_config
 from tracker import HandTracker
 from mapper import MidiMapper
 from midi_sender import MidiSender
 
+# --- Global Variables for GUI / Calibration ---
+buttons = {}
+hovered_button_key = None
+calibration_action = None # Stores the key of the button clicked
+window_name = "CamMIDI Output"
+last_calibrated_message = ""
+message_display_time = 0
+
+def draw_text_outlined(img, text, pos, font, scale, fg_color, bg_color, fg_thickness, bg_thickness_add=2):
+    """Draws text with a background outline."""
+    x, y = pos
+    cv2.putText(img, text, (x, y), font, scale, bg_color, fg_thickness + bg_thickness_add, cv2.LINE_AA)
+    cv2.putText(img, text, (x, y), font, scale, fg_color, fg_thickness, cv2.LINE_AA)
+
+def define_buttons(frame_width, frame_height):
+    """Defines button locations and text based on frame size."""
+    global buttons
+    buttons.clear() # Clear previous definitions
+
+    button_h = 28 # Slightly smaller height
+    button_w = 145 # Slightly wider
+    spacing = 4
+    bottom_margin = spacing + 5 # Space from bottom edge
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45 # Slightly smaller font
+    fg_color = (255, 255, 255)
+    bg_color = (100, 100, 100)
+    hover_color = (130, 130, 130) # Color when hovered
+    action_color = (160, 160, 160) # Color briefly when clicked
+
+    # --- ROW 1: Pinches (Index, Middle) ---
+    row1_y = frame_height - bottom_margin - 2 * button_h - spacing # Top row of buttons
+    start_x = spacing
+
+    # T-Index
+    buttons['calib_ti_pinch_min'] = {
+        'rect': (start_x, row1_y, button_w, button_h),
+        'text': 'Set T-Idx MIN', 'action': 'calib_ti_pinch_min', 'help': 'Click when Thumb & Index tips are CLOSEST',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing
+    buttons['calib_ti_pinch_max'] = {
+        'rect': (start_x, row1_y, button_w, button_h),
+        'text': 'Set T-Idx MAX', 'action': 'calib_ti_pinch_max', 'help': 'Click when Thumb & Index tips are FARTHEST apart',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing + 10 # Gap
+
+    # T-Middle
+    buttons['calib_tm_pinch_min'] = {
+        'rect': (start_x, row1_y, button_w, button_h),
+        'text': 'Set T-Mid MIN', 'action': 'calib_tm_pinch_min', 'help': 'Click when Thumb & Middle tips are CLOSEST',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing
+    buttons['calib_tm_pinch_max'] = {
+        'rect': (start_x, row1_y, button_w, button_h),
+        'text': 'Set T-Mid MAX', 'action': 'calib_tm_pinch_max', 'help': 'Click when Thumb & Middle tips are FARTHEST apart',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+
+    # --- ROW 2: Pinches (Ring, Pinky) ---
+    row2_y = frame_height - bottom_margin - button_h # Middle row
+    start_x = spacing
+
+    # T-Ring
+    buttons['calib_tr_pinch_min'] = {
+        'rect': (start_x, row2_y, button_w, button_h),
+        'text': 'Set T-Ring MIN', 'action': 'calib_tr_pinch_min', 'help': 'Click when Thumb & Ring tips are CLOSEST',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing
+    buttons['calib_tr_pinch_max'] = {
+        'rect': (start_x, row2_y, button_w, button_h),
+        'text': 'Set T-Ring MAX', 'action': 'calib_tr_pinch_max', 'help': 'Click when Thumb & Ring tips are FARTHEST apart',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing + 10 # Gap
+
+    # T-Pinky
+    buttons['calib_tp_pinch_min'] = {
+        'rect': (start_x, row2_y, button_w, button_h),
+        'text': 'Set T-Pink MIN', 'action': 'calib_tp_pinch_min', 'help': 'Click when Thumb & Pinky tips are CLOSEST',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing
+    buttons['calib_tp_pinch_max'] = {
+        'rect': (start_x, row2_y, button_w, button_h),
+        'text': 'Set T-Pink MAX', 'action': 'calib_tp_pinch_max', 'help': 'Click when Thumb & Pinky tips are FARTHEST apart',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+
+    # --- ROW 3: Spread & Save ---
+    # Let's place Spread on the left of row 3, Save on the right
+    row3_y = frame_height - bottom_margin # Bottom row - but we need space for help text maybe put row 1/2 lower
+    row2_y = frame_height - bottom_margin - button_h
+    row1_y = frame_height - bottom_margin - 2*button_h - spacing
+
+    # Recalculate Y for rows 1 and 2 to make space below row 2
+    row3_y = frame_height - bottom_margin - button_h # New bottom row Y
+    row2_y = row3_y - button_h - spacing
+    row1_y = row2_y - button_h - spacing
+    help_text_y = frame_height - bottom_margin + 2 # Y position for help text
+
+    # Redefine buttons with corrected Y
+    # Row 1
+    buttons['calib_ti_pinch_min']['rect'] = (buttons['calib_ti_pinch_min']['rect'][0], row1_y, button_w, button_h)
+    buttons['calib_ti_pinch_max']['rect'] = (buttons['calib_ti_pinch_max']['rect'][0], row1_y, button_w, button_h)
+    buttons['calib_tm_pinch_min']['rect'] = (buttons['calib_tm_pinch_min']['rect'][0], row1_y, button_w, button_h)
+    buttons['calib_tm_pinch_max']['rect'] = (buttons['calib_tm_pinch_max']['rect'][0], row1_y, button_w, button_h)
+    # Row 2
+    buttons['calib_tr_pinch_min']['rect'] = (buttons['calib_tr_pinch_min']['rect'][0], row2_y, button_w, button_h)
+    buttons['calib_tr_pinch_max']['rect'] = (buttons['calib_tr_pinch_max']['rect'][0], row2_y, button_w, button_h)
+    buttons['calib_tp_pinch_min']['rect'] = (buttons['calib_tp_pinch_min']['rect'][0], row2_y, button_w, button_h)
+    buttons['calib_tp_pinch_max']['rect'] = (buttons['calib_tp_pinch_max']['rect'][0], row2_y, button_w, button_h)
+
+    # Row 3 - Spread
+    start_x = spacing
+    buttons['calib_spread_min'] = {
+        'rect': (start_x, row3_y, button_w, button_h),
+        'text': 'Set Spread MIN', 'action': 'calib_spread_min', 'help': 'Click when fingers are SQUEEZED together',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+    start_x += button_w + spacing
+    buttons['calib_spread_max'] = {
+        'rect': (start_x, row3_y, button_w, button_h),
+        'text': 'Set Spread MAX', 'action': 'calib_spread_max', 'help': 'Click when fingers are SPREAD APART maximally',
+        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
+    }
+
+    # Row 3 - Save (Far Right)
+    save_w = 100 # Smaller width for save
+    save_x = frame_width - save_w - spacing
+    buttons['save_config'] = {
+        'rect': (save_x, row3_y, save_w, button_h),
+        'text': 'Save Config', 'action': 'save_config', 'help': 'Save current calibrated min/max values to config.yaml',
+        'font': font, 'scale': font_scale, 'fg': (0, 255, 0), 'bg': (0, 80, 0), 'hover': (0, 120, 0), 'action_c': (0,160,0)
+    }
+
+    # Store help text position
+    buttons['help_text_pos'] = (spacing, help_text_y)
+
+
+def draw_buttons(frame):
+    """Draws all defined buttons and hover help text on the frame."""
+    global hovered_button_key
+    active_help_text = None
+
+    for key, btn in buttons.items():
+        if 'rect' not in btn: continue # Skip help_text_pos entry
+
+        x, y, w, h = btn['rect']
+        bg = btn['bg']
+        # Check if this button is hovered
+        is_hovered = (key == hovered_button_key)
+        if is_hovered:
+            bg = btn['hover']
+            active_help_text = btn.get('help') # Get help text if hovered
+
+        # Briefly change color if it was the last action clicked
+        if key == calibration_action: # Use the global action flag
+             bg = btn['action_c']
+
+        # Draw background rectangle
+        cv2.rectangle(frame, (x, y), (x + w, y + h), bg, -1)
+        # Draw border
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 255), 1)
+
+        # Calculate text position for centering
+        text_size = cv2.getTextSize(btn['text'], btn['font'], btn['scale'], 1)[0]
+        text_x = x + (w - text_size[0]) // 2
+        text_y = y + (h + text_size[1]) // 2
+
+        # Draw text
+        cv2.putText(frame, btn['text'], (text_x, text_y), btn['font'], btn['scale'], btn['fg'], 1, cv2.LINE_AA)
+
+    # Draw the active help text (if any)
+    if active_help_text and 'help_text_pos' in buttons:
+        help_x, help_y = buttons['help_text_pos']
+        draw_text_outlined(frame, f"Info: {active_help_text}", (help_x, help_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), (0,0,0), 1)
+
+
+def mouse_callback(event, x, y, flags, param):
+    """Handles mouse events (clicks and movement for hover)."""
+    global calibration_action, hovered_button_key
+    
+    # Update hover state on movement
+    if event == cv2.EVENT_MOUSEMOVE:
+        new_hover_key = None
+        for key, btn in buttons.items():
+            if 'rect' not in btn: continue
+            bx, by, bw, bh = btn['rect']
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                new_hover_key = key
+                break
+        # Only update if hover state changed to reduce redraw flicker potentially
+        if new_hover_key != hovered_button_key:
+            hovered_button_key = new_hover_key
+
+    # Handle clicks
+    elif event == cv2.EVENT_LBUTTONDOWN:
+        # Reset hover state on click start (optional)
+        # hovered_button_key = None
+        clicked_on_button = False
+        for key, btn in buttons.items():
+            if 'rect' not in btn: continue
+            bx, by, bw, bh = btn['rect']
+            if bx <= x <= bx + bw and by <= y <= by + bh:
+                calibration_action = btn['action'] # Set the action flag
+                print(f"Button '{btn['text']}' clicked. Action: {calibration_action}")
+                clicked_on_button = True
+                break
+        # If click was not on a button, clear the action (prevents accidental repeats)
+        # if not clicked_on_button:
+        #      calibration_action = None # Maybe not needed if action is reset in main loop
+
+def update_config_value(config, source_name, param_name, value, hand_index=0):
+    """Updates min_input or max_input for a specific source in the config, ensuring min < max."""
+    global last_calibrated_message, message_display_time
+    found_mapping = False
+    updated = False # Flag to check if update actually happened
+
+    for mapping in config.get('mappings', []):
+        if isinstance(mapping, dict) and mapping.get('source') == source_name:
+            found_mapping = True
+            current_val = mapping.get(param_name)
+
+            # --- Check for min/max inversion and auto-correct ---
+            other_param = 'max_input' if param_name == 'min_input' else 'min_input'
+            other_val = mapping.get(other_param) # Get the *other* boundary
+
+            corrected_value = value
+            swap_occurred = False
+
+            if param_name == 'min_input':
+                # Setting MIN: if new min >= current max, set max to be slightly larger than new min
+                if other_val is not None and value >= other_val:
+                    mapping['max_input'] = value + 0.01 # Ensure max is always > min
+                    print(f"Warning: New min ({value:.4f}) >= current max ({other_val:.4f}). Auto-adjusting max.")
+                    swap_occurred = True # Technically an adjustment, not a swap
+                mapping[param_name] = value # Set the new min
+                updated = True
+
+            elif param_name == 'max_input':
+                # Setting MAX: if new max <= current min, set min to be slightly smaller than new max
+                if other_val is not None and value <= other_val:
+                    mapping['min_input'] = value - 0.01 if value > 0 else 0.0 # Ensure min is always < max (and non-negative)
+                    print(f"Warning: New max ({value:.4f}) <= current min ({other_val:.4f}). Auto-adjusting min.")
+                    swap_occurred = True # Adjustment
+                mapping[param_name] = value # Set the new max
+                updated = True
+
+            # --- Format Message ---
+            if updated:
+                final_min = mapping.get('min_input', 'N/A')
+                final_max = mapping.get('max_input', 'N/A')
+                try: final_min_f = f"{final_min:.3f}"
+                except: final_min_f = str(final_min)
+                try: final_max_f = f"{final_max:.3f}"
+                except: final_max_f = str(final_max)
+
+                msg = f"Calibrated {source_name}: Range [{final_min_f}, {final_max_f}]"
+                if swap_occurred: msg += " (Adjusted)"
+                print(msg)
+                last_calibrated_message = msg
+                message_display_time = time.time()
+
+            break # Assume only one mapping per source
+
+    if not found_mapping:
+        msg = f"Warning: No mapping found for source '{source_name}'. Cannot calibrate."
+        print(msg)
+        last_calibrated_message = msg
+        message_display_time = time.time()
+
+    # Return flag indicating if an update was made to trigger mapper refresh
+    return updated
+
+# --- Main Function ---
 def main():
+    global calibration_action, last_calibrated_message, message_display_time
+
+    # --- Argument Parsing ---
+    parser = argparse.ArgumentParser(description="CamMIDI: Control MIDI with Hand Tracking.")
+    parser.add_argument('--use-defaults', action='store_true', help="Force use of default configuration, ignore config.yaml file.")
+    parser.add_argument('--config', type=str, default='config.yaml', help="Path to the configuration file.")
+    args = parser.parse_args()
+    config_path = args.config
+
     # --- Initialization ---
-    config = load_config()
+    config = load_config(config_path=config_path, force_defaults=args.use_defaults)
+    if args.use_defaults: print("Info: --use-defaults flag detected. Ignoring config.yaml.")
+
     tracker = HandTracker(config)
-    mapper = MidiMapper(config)
+    mapper = MidiMapper(config) # Mapper init reads max_hands and explicit sources
     midi_sender = MidiSender(config)
 
-    # Camera Setup
-    cap = cv2.VideoCapture(config['camera']['index'])
+    # --- Camera Setup ---
+    cam_idx = config.get('camera', {}).get('index', 0)
+    req_w = config.get('camera', {}).get('width', 800) # Use config defaults
+    req_h = config.get('camera', {}).get('height', 460)
+    cap = cv2.VideoCapture(cam_idx)
     if not cap.isOpened():
-        print(f"Error: Could not open camera index {config['camera']['index']}.")
-        midi_sender.close() # Close MIDI port if camera fails
-        tracker.close()
+        print(f"Error: Could not open camera index {cam_idx}.")
+        if midi_sender: midi_sender.close()
+        if tracker: tracker.close()
         return
-
-    # Attempt to set camera resolution
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config['camera']['width'])
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config['camera']['height'])
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Camera opened. Requested: {config['camera']['width']}x{config['camera']['height']}, Actual: {actual_width}x{actual_height}")
+    print(f"Camera opened. Requested: {req_w}x{req_h}, Actual: {actual_width}x{actual_height}")
 
+    display_enabled = config.get('display', {}).get('show_window', True)
+    if display_enabled:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, actual_width, actual_height)
+        define_buttons(actual_width, actual_height) # Define buttons based on actual size
+        cv2.setMouseCallback(window_name, mouse_callback) # Set the mouse callback
 
-    if config['display']['show_window']:
-        cv2.namedWindow("CamMIDI Output", cv2.WINDOW_NORMAL)
-        # Resize based on actual capture size initially
-        cv2.resizeWindow("CamMIDI Output", actual_width, actual_height)
+    pTime = 0
 
-
-    pTime = 0 # Previous time for FPS calculation
-
+    # --- Startup Info ---
     print("\nStarting CamMIDI loop. Press 'Q' in the output window to quit.")
-    print("Ensure your DAW is configured to receive MIDI from:", config['midi']['port_name'])
+    print("Use UI buttons to calibrate Pinch/Spread min/max values.")
+    print("Press 'Save Config' button in UI to save calibrated values.")
+    print("Ensure your DAW is configured to receive MIDI from:", config.get('midi', {}).get('port_name', 'N/A'))
+    max_h = config.get('mediapipe', {}).get('max_num_hands', 1)
+    print(f"Tracking up to {max_h} hands.")
+    print(" Channel 1 -> First Detected Hand, Channel 2 -> Second Detected Hand.")
+    if max_h > 1:
+        print(f" Implicit Ch2 mapping: ON (uses SAME CC as Channel 1). Explicit Ch2 mappings override.") # Updated message
     print("---")
-    print("CALIBRATION NOTE: For distance/angle sources (curl, pinch, orientation, z),")
-    print("you MUST adjust 'min_input' and 'max_input' in config.yaml for your setup!")
+    print("CALIBRATION NOTE: Adjust 'min_input'/'max_input' in config.yaml (or use UI buttons)!")
     print("---")
-
 
     # --- Main Loop ---
     try:
+        action_display_start_time = 0
+        last_action_for_draw = None
         while True:
+            # (Frame capture)
             success, frame = cap.read()
-            if not success or frame is None:
-                print("Error: Failed to grab frame from camera.")
-                time.sleep(0.5) # Avoid busy-looping on error
-                continue
+            if not success or frame is None: continue
 
-            loop_start_time = time.time() # For detailed timing if needed
+            # 1. Track Hands
+            # Important: process_frame might flip the frame based on config
+            processed_frame, all_hands_data = tracker.process_frame(frame)
 
-            # 1. Track Hands & Calculate Metrics
-            processed_frame, tracking_data = tracker.process_frame(frame)
+            # --- Handle Calibration Actions ---
+            if calibration_action:
+                current_action = calibration_action
+                calibration_action = None # Reset flag immediately
+                config_updated = False
 
-            # 2. Map Tracking Data to MIDI
-            midi_map = mapper.calculate_midi(tracking_data, actual_width, actual_height)
+                # Find the first detected hand for calibration data
+                first_hand = None
+                for hand_data in all_hands_data:
+                    if hand_data.get('found', False):
+                        first_hand = hand_data
+                        break
 
-            # 3. Send MIDI Messages
-            if midi_sender.port_opened:
+                if first_hand is None:
+                    msg = "Calibration failed: No hand detected."
+                    print(msg)
+                    last_calibrated_message = msg
+                    message_display_time = time.time()
+                else:
+                     # --- Perform Calibration based on current_action ---
+                     # (Spread actions)
+                     if current_action == 'calib_spread_min':
+                         config_updated |= update_config_value(config, 'index_middle_spread', 'min_input', first_hand['index_middle_spread'])
+                         config_updated |= update_config_value(config, 'middle_ring_spread', 'min_input', first_hand['middle_ring_spread'])
+                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'min_input', first_hand['ring_pinky_spread'])
+                     elif current_action == 'calib_spread_max':
+                         config_updated |= update_config_value(config, 'index_middle_spread', 'max_input', first_hand['index_middle_spread'])
+                         config_updated |= update_config_value(config, 'middle_ring_spread', 'max_input', first_hand['middle_ring_spread'])
+                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'max_input', first_hand['ring_pinky_spread'])
+                     # (Pinch actions - T-Idx, T-Mid, T-Ring, T-Pinky)
+                     elif current_action == 'calib_ti_pinch_min': config_updated |= update_config_value(config, 'thumb_index_pinch', 'min_input', first_hand['thumb_index_pinch'])
+                     elif current_action == 'calib_ti_pinch_max': config_updated |= update_config_value(config, 'thumb_index_pinch', 'max_input', first_hand['thumb_index_pinch'])
+                     elif current_action == 'calib_tm_pinch_min': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'min_input', first_hand['thumb_middle_pinch'])
+                     elif current_action == 'calib_tm_pinch_max': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'max_input', first_hand['thumb_middle_pinch'])
+                     elif current_action == 'calib_tr_pinch_min': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'min_input', first_hand['thumb_ring_pinch'])
+                     elif current_action == 'calib_tr_pinch_max': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'max_input', first_hand['thumb_ring_pinch'])
+                     elif current_action == 'calib_tp_pinch_min': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'min_input', first_hand['thumb_pinky_pinch'])
+                     elif current_action == 'calib_tp_pinch_max': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'max_input', first_hand['thumb_pinky_pinch'])
+
+                     # (Save action)
+                     elif current_action == 'save_config':
+                         save_config(config, config_path)
+                         last_calibrated_message = f"Configuration saved to {config_path}"
+                         message_display_time = time.time()
+                         config_updated = False # No mapper update needed
+
+                     # Update mapper if config changed
+                     if config_updated:
+                          print("Config updated by calibration, refreshing mapper.")
+                          mapper.update_mappings(config['mappings'])
+
+
+            # 2. Map MIDI (using potentially updated mappings)
+            # Pass the *actual* frame dimensions to the mapper for centroid calculation
+            midi_map = mapper.calculate_midi(all_hands_data, actual_width, actual_height)
+
+            # 3. Send MIDI
+            if midi_sender and midi_sender.port_opened:
                  for (ch, cc), val in midi_map.items():
                       midi_sender.send_cc(ch, cc, val)
 
             # 4. Visual Feedback
-            if config['display']['show_window']:
-                display_frame = processed_frame.copy() # Work on a copy
+            if display_enabled:
+                display_frame = processed_frame.copy()
+                # Draw tracker visuals (landmarks, etc.) AFTER potential frame flip in tracker
+                display_frame = tracker.draw_visuals(display_frame, all_hands_data)
 
-                # Draw tracking visuals (landmarks, etc.)
-                display_frame = tracker.draw_visuals(display_frame, tracking_data)
+                # FPS
+                cTime = time.time(); delta_time = cTime - pTime
+                fps = 1 / delta_time if delta_time > 0 else 0; pTime = cTime
+                if config.get('display', {}).get('show_fps', True):
+                    draw_text_outlined(display_frame, f"FPS: {int(fps)}", (10, 30),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), (0,0,0), 2)
 
-                # Calculate and display FPS
-                cTime = time.time()
-                fps = 1 / (cTime - pTime) if (cTime - pTime) > 0 else 0
-                pTime = cTime
+                # MIDI Debug Display (remains the same logic)
+                y_offset_left, y_offset_right = 60, 60
+                font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                fg_col, bg_col = (255, 255, 255), (0, 0, 0)
+                margin = 10
+                messages_left = []  # Messages for the left side (Hand 2)
+                messages_right = [] # Messages for the right side (Hand 1)
 
-                if config['display']['show_fps']:
-                    cv2.putText(display_frame, f"FPS: {int(fps)}", (10, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                # Build source lookup (same as before)
+                source_lookup = {}
+                explicit_ch2_sources = mapper.explicit_ch2_sources
+                for mapping in config.get('mappings', []):
+                    # ... (logic to populate source_lookup - unchanged) ...
+                    if not isinstance(mapping, dict): continue
+                    m_ch = mapping.get('channel')
+                    m_cc = mapping.get('cc')
+                    m_src = mapping.get('source')
+                    if m_ch is None or m_cc is None or m_src is None: continue
+                    if m_ch == 1:
+                        source_lookup[(1, m_cc)] = (m_src, False)
+                        if max_h > 1 and m_src not in explicit_ch2_sources:
+                            has_explicit_conflict = any(m2.get('channel') == 2 and m2.get('cc') == m_cc for m2 in config.get('mappings', []) if isinstance(m2, dict))
+                            if not has_explicit_conflict:
+                                source_lookup[(2, m_cc)] = (m_src, True)
+                    elif m_ch == 2:
+                        source_lookup[(2, m_cc)] = (m_src, False)
 
-                # Display mapped MIDI values on screen
-                y_offset = 60
-                for (ch, cc), val in midi_map.items():
-                     # Find corresponding mapping details for display
-                     label = f"Ch{ch} CC{cc}"
-                     source_name = "Unknown"
-                     for m in config.get('mappings', []):
-                         if m['channel'] == ch and m['cc'] == cc:
-                              source_name = m['source']
-                              label = f"{source_name} -> Ch{ch} CC{cc}"
-                              break # Simple: take the first match if multiple map to same CC
+                for hand_index, hand_data in enumerate(all_hands_data):
+                    if not hand_data['found']: continue
+                    target_channel = hand_index + 1 # Channel 1 (index 0), Channel 2 (index 1)
+                    # Get detected handedness label primarily for display text
+                    detected_handedness = hand_data.get('handedness', 'Unknown')
+                    hand_label = f"H{target_channel}({detected_handedness[0]})" # e.g., H1(R), H2(L), H1(U)
 
-                     text = f"{label}: {val}"
-                     cv2.putText(display_frame, text, (10, y_offset),
-                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1) # Smaller font
-                     y_offset += 18 # Smaller spacing
+                    for (ch, cc), val in midi_map.items():
+                        if ch == target_channel:
+                            source_info = source_lookup.get((ch, cc))
+                            source_name = f"Src?({ch},{cc})"
+                            mapping_type = ""
+                            if source_info:
+                                source_name, is_implicit = source_info
+                                if is_implicit: mapping_type = "[Impl]"
+                                elif ch == 2: mapping_type = "[Expl]"
+
+                            # Format text including detected handedness
+                            text = f"{hand_label}{mapping_type} {source_name} -> CC{cc}: {val}"
+
+                            # Assign to list based on target_channel (index)
+                            if target_channel == 1: # First hand's data goes to the right side
+                                messages_right.append(text)
+                            elif target_channel == 2: # Second hand's data goes to the left side
+                                messages_left.append(text)
+
+                # Draw messages from the lists
+                for text in messages_left: # Draw left-aligned
+                     draw_text_outlined(display_frame, text, (margin, y_offset_left), font, scale, fg_col, bg_col, thick)
+                     y_offset_left += 18
+                for text in messages_right: # Draw right-aligned
+                    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+                    tx = max(0, actual_width - tw - margin) # Align to right
+                    draw_text_outlined(display_frame, text, (tx, y_offset_right), font, scale, fg_col, bg_col, thick)
+                    y_offset_right += 18
+                # --- End MIDI Debug Display ---
+
+                # --- Draw Buttons & Help Text ---
+                # Clear button action highlight after a short delay
+                if last_action_for_draw and (time.time() - action_display_start_time > 0.2):
+                    last_action_for_draw = None # Stop highlighting
+
+                # Pass the action flag to draw_buttons for visual feedback
+                calibration_action_for_draw = last_action_for_draw # Use the temp variable
+                draw_buttons(display_frame) # Hover effect handled by mouse callback updating hovered_button_key
+
+                # --- Draw Calibration Status Message ---
+                # ... (remains the same) ...
+                if last_calibrated_message and (time.time() - message_display_time < 3.0):
+                     (tw, th), _ = cv2.getTextSize(last_calibrated_message, font, scale, thick)
+                     tx = (actual_width - tw) // 2
+                     ty = y_offset_left + 10 # Position below left debug text
+                     draw_text_outlined(display_frame, last_calibrated_message, (tx, ty), font, scale, (0, 255, 255), bg_col, thick)
+                elif last_calibrated_message and (time.time() - message_display_time >= 3.0):
+                    last_calibrated_message = ""
 
 
-                cv2.imshow("CamMIDI Output", display_frame)
+                # --- Show Frame ---
+                cv2.imshow(window_name, display_frame)
 
-            # --- Check for Exit Key ---
+            # Exit Check & Save Shortcut
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                print("Exit key pressed.")
-                break
+            if key == ord('q'): break
+            elif key == ord('s'):
+                 print("Save triggered by keyboard ('s')")
+                 save_config(config, config_path)
+                 last_calibrated_message = f"Config saved to {config_path} (Key 's')"
+                 message_display_time = time.time()
 
-    except KeyboardInterrupt:
-         print("Keyboard interrupt received.")
+
+    except KeyboardInterrupt: print("Keyboard interrupt received.")
     finally:
-        # --- Cleanup ---
+        # Cleanup
         print("Shutting down...")
-        cap.release()
-        if config['display']['show_window']:
-            cv2.destroyAllWindows()
-        tracker.close()
-        midi_sender.close()
+        if cap and cap.isOpened(): cap.release()
+        if display_enabled: cv2.destroyAllWindows()
+        if tracker: tracker.close()
+        if midi_sender: midi_sender.close()
         print("CamMIDI stopped.")
-
 
 if __name__ == "__main__":
     main()

@@ -1,10 +1,10 @@
+# tracker.py
 import cv2
 import mediapipe as mp
 import time
 import numpy as np
 
-# --- Helper Functions for Calculations ---
-
+# --- Helper Functions (remain the same) ---
 def calculate_distance(p1, p2):
     """Calculates 3D Euclidean distance between two points."""
     return np.linalg.norm(p1 - p2)
@@ -15,8 +15,11 @@ def calculate_vector(p1, p2):
 
 def calculate_angle_between_vectors(v1, v2):
     """Calculates the angle in radians between two vectors."""
-    unit_v1 = v1 / np.linalg.norm(v1)
-    unit_v2 = v2 / np.linalg.norm(v2)
+    norm_v1 = np.linalg.norm(v1)
+    norm_v2 = np.linalg.norm(v2)
+    if norm_v1 == 0 or norm_v2 == 0: return 0.0 # Avoid division by zero
+    unit_v1 = v1 / norm_v1
+    unit_v2 = v2 / norm_v2
     dot_product = np.dot(unit_v1, unit_v2)
     # Clip dot product to avoid numerical errors with arccos
     dot_product = np.clip(dot_product, -1.0, 1.0)
@@ -34,13 +37,14 @@ class HandTracker:
         self.mpHands = mp.solutions.hands
         try:
             self.hands = self.mpHands.Hands(
-                static_image_mode=self.config['static_image_mode'],
-                max_num_hands=self.config['max_num_hands'],
-                min_detection_confidence=self.config['min_detection_confidence'],
-                min_tracking_confidence=self.config['min_tracking_confidence']
+                static_image_mode=self.config.get('static_image_mode', False), # Use get for robustness
+                max_num_hands=self.config.get('max_num_hands', 1),
+                min_detection_confidence=self.config.get('min_detection_confidence', 0.5),
+                min_tracking_confidence=self.config.get('min_tracking_confidence', 0.5)
             )
-        except TypeError:
-            print("Warning: MediaPipe Hands parameters might have changed. Using defaults.")
+            print(f"MediaPipe Hands initialized for up to {self.config.get('max_num_hands', 1)} hands.")
+        except TypeError as e:
+            print(f"Warning: MediaPipe Hands parameters might have changed ({e}). Using defaults.")
             self.hands = self.mpHands.Hands() # Fallback
 
         self.mpDraw = mp.solutions.drawing_utils
@@ -50,26 +54,11 @@ class HandTracker:
 
         print("HandTracker initialized.")
 
-    def process_frame(self, frame):
-        """Processes a single video frame to find hand landmarks and calculate metrics."""
-        self.frame_height, self.frame_width, _ = frame.shape # Get actual dimensions
-
-        # Optional horizontal flip for intuitive control
-        if self.display_config.get('flip_horizontal', True):
-            frame = cv2.flip(frame, 1)
-
-        # Convert BGR image to RGB for MediaPipe
-        imgRGB = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        imgRGB.flags.writeable = False # Optimization
-
-        # Process the frame
-        self.results = self.hands.process(imgRGB)
-
-        imgRGB.flags.writeable = True # Make writable again
-
-        # Initialize tracking data dictionary with defaults
-        tracking_data = {
+    def _get_default_tracking_data(self):
+        """Returns a dictionary with default values for tracking metrics."""
+        return {
             'found': False,
+            'handedness': None, # 'Left' or 'Right'
             'centroid_x': 0.0,
             'centroid_y': 0.0,
             'wrist_x': 0.0,
@@ -93,188 +82,309 @@ class HandTracker:
             'thumb_pinky_pinch': 0.0,
             'all_landmarks_pixels': [], # List of (x, y) pixel coordinates
             'all_landmarks_normalized': [], # List of (x, y, z) normalized coordinates
-            'raw_results': self.results
+            'raw_hand_landmarks': None, # Store the raw landmarks object for drawing
+            'raw_handedness_info': None # Store raw handedness info
         }
 
-        if self.results.multi_hand_landmarks:
-            # --- Focus on the first detected hand ---
-            handLms = self.results.multi_hand_landmarks[0]
-            tracking_data['found'] = True
 
-            # Store landmarks in easily accessible formats
-            landmarks_norm = np.array([(lm.x, lm.y, lm.z) for lm in handLms.landmark])
-            landmarks_pixels = np.array([(int(lm.x * self.frame_width), int(lm.y * self.frame_height)) for lm in handLms.landmark])
+    def process_frame(self, frame):
+        """Processes a single video frame to find hand landmarks and calculate metrics for each hand."""
+        self.frame_height, self.frame_width, _ = frame.shape # Get actual dimensions
 
-            tracking_data['all_landmarks_pixels'] = landmarks_pixels.tolist()
-            tracking_data['all_landmarks_normalized'] = landmarks_norm.tolist()
+        # Optional horizontal flip for intuitive control
+        if self.display_config.get('flip_horizontal', True):
+            frame = cv2.flip(frame, 1)
 
-            # --- Calculate Centroid (as defined in config) ---
-            centroid_lm_id = self.config.get('centroid_landmark_id', 0)
-            try:
-                centroid_pixel = landmarks_pixels[centroid_lm_id]
-                tracking_data['centroid_x'] = float(centroid_pixel[0])
-                tracking_data['centroid_y'] = float(centroid_pixel[1])
-            except IndexError:
-                print(f"Warning: Centroid landmark ID {centroid_lm_id} out of range. Using landmark 0.")
-                centroid_pixel = landmarks_pixels[0]
-                tracking_data['centroid_x'] = float(centroid_pixel[0])
-                tracking_data['centroid_y'] = float(centroid_pixel[1])
+        # Convert BGR image to RGB for MediaPipe
+        imgRGB = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        imgRGB.flags.writeable = False # Optimization
 
-            # --- 1. Overall Hand Position (Wrist) ---
-            wrist_norm = landmarks_norm[0]
-            wrist_pixel = landmarks_pixels[0]
-            tracking_data['wrist_x'] = float(wrist_pixel[0])
-            tracking_data['wrist_y'] = float(wrist_pixel[1])
-            tracking_data['wrist_z'] = float(wrist_norm[2]) # Use the raw Z value
+        # Process the frame
+        self.results = self.hands.process(imgRGB)
 
-            # --- 2. Overall Hand Orientation ---
-            # Requires at least 3 points to define a plane/orientation
-            if len(landmarks_norm) > 9: # Need Wrist, Index MCP, Middle MCP etc.
+        imgRGB.flags.writeable = True # Make writable again
+
+        # Initialize list to hold tracking data for each detected hand
+        all_hands_data = []
+
+        if self.results.multi_hand_landmarks and self.results.multi_handedness:
+            # Limit to the configured max_num_hands
+            num_hands_to_process = min(len(self.results.multi_hand_landmarks), self.config.get('max_num_hands', 1))
+
+            for i in range(num_hands_to_process):
+                handLms = self.results.multi_hand_landmarks[i]
+                handedness_info = self.results.multi_handedness[i]
+
+                # Initialize tracking data for this specific hand
+                hand_data = self._get_default_tracking_data()
+                hand_data['found'] = True
+                hand_data['raw_hand_landmarks'] = handLms # Store for drawing
+                hand_data['raw_handedness_info'] = handedness_info # Store for drawing/debug
+
+                # Get handedness ('Left' or 'Right')
                 try:
-                    # Define axes based on landmarks (normalized coords)
-                    # Y-axis: Up the arm/hand (Wrist to Middle MCP)
-                    vec_0_9 = calculate_vector(landmarks_norm[0], landmarks_norm[9])
-                    hand_y_axis = vec_0_9 / np.linalg.norm(vec_0_9)
+                    hand_data['handedness'] = handedness_info.classification[0].label
+                except (IndexError, AttributeError):
+                     print("Warning: Could not determine handedness.")
+                     hand_data['handedness'] = "Unknown"
 
-                    # X-axis: Across the knuckles (approximate: Pinky MCP to Index MCP)
-                    # Flip direction if hand is flipped relative to expectation
-                    vec_17_5 = calculate_vector(landmarks_norm[17], landmarks_norm[5])
-                    # Project onto plane normal to hand_y_axis to make it orthogonal
-                    hand_x_axis_initial = vec_17_5 - np.dot(vec_17_5, hand_y_axis) * hand_y_axis
-                    hand_x_axis = hand_x_axis_initial / np.linalg.norm(hand_x_axis_initial)
 
-                    # Z-axis: Palm normal (using cross product)
-                    hand_z_axis = np.cross(hand_x_axis, hand_y_axis)
+                # Store landmarks in easily accessible formats
+                landmarks_norm = np.array([(lm.x, lm.y, lm.z) for lm in handLms.landmark])
+                landmarks_pixels = np.array([(int(lm.x * self.frame_width), int(lm.y * self.frame_height)) for lm in handLms.landmark])
 
-                    # --- Calculate Pitch, Yaw, Roll (relative to camera frame) ---
-                    # Assuming Camera looks along +Z, Y is Up, X is Right
-                    cam_x = np.array([1, 0, 0])
-                    cam_y = np.array([0, 1, 0])
-                    cam_z = np.array([0, 0, 1])
+                hand_data['all_landmarks_pixels'] = landmarks_pixels.tolist()
+                hand_data['all_landmarks_normalized'] = landmarks_norm.tolist()
 
-                    # Pitch: Angle of hand's Y-axis with the camera's XY plane (arcsin of Y component)
-                    tracking_data['hand_pitch'] = float(np.arcsin(np.clip(hand_y_axis[1], -1.0, 1.0)))
+                # --- Calculate Centroid (as defined in config) ---
+                centroid_lm_id = self.config.get('centroid_landmark_id', 0)
+                try:
+                    # Ensure landmark ID is within the valid range (0-20)
+                    valid_centroid_lm_id = max(0, min(20, centroid_lm_id))
+                    if valid_centroid_lm_id != centroid_lm_id:
+                        print(f"Warning: Centroid landmark ID {centroid_lm_id} out of range [0, 20]. Using {valid_centroid_lm_id}.")
+                        centroid_lm_id = valid_centroid_lm_id
 
-                    # Yaw: Angle of hand's Y-axis projected onto camera's XZ plane, relative to camera Z-axis
-                    # Use atan2 for full range
-                    proj_y_on_xz = np.array([hand_y_axis[0], 0, hand_y_axis[2]])
-                    # Prevent zero vector for atan2
-                    if np.linalg.norm(proj_y_on_xz) > 1e-6:
-                        tracking_data['hand_yaw'] = float(np.arctan2(proj_y_on_xz[0], proj_y_on_xz[2]))
-                    else: # Hand pointing straight up/down relative to camera
-                        tracking_data['hand_yaw'] = 0.0
+                    centroid_pixel = landmarks_pixels[centroid_lm_id]
+                    hand_data['centroid_x'] = float(centroid_pixel[0])
+                    hand_data['centroid_y'] = float(centroid_pixel[1])
+                except IndexError:
+                    print(f"Warning: IndexError accessing centroid landmark ID {centroid_lm_id}. Using landmark 0.")
+                    if len(landmarks_pixels) > 0:
+                         centroid_pixel = landmarks_pixels[0]
+                         hand_data['centroid_x'] = float(centroid_pixel[0])
+                         hand_data['centroid_y'] = float(centroid_pixel[1])
+                    # Else keep default 0.0
 
-                    # Roll: Angle of hand's X-axis projected onto camera's XY plane, relative to camera X-axis
-                    proj_x_on_xy = np.array([hand_x_axis[0], hand_x_axis[1], 0])
-                     # Prevent zero vector for atan2
-                    if np.linalg.norm(proj_x_on_xy) > 1e-6:
-                         tracking_data['hand_roll'] = float(np.arctan2(proj_x_on_xy[1], proj_x_on_xy[0]))
-                    else: # Hand edge-on to camera horizontally
-                        tracking_data['hand_roll'] = 0.0 # Or potentially pi/2 depending on definition
+
+                # --- 1. Overall Hand Position (Wrist) ---
+                if len(landmarks_norm) > 0 and len(landmarks_pixels) > 0:
+                    wrist_norm = landmarks_norm[0]
+                    wrist_pixel = landmarks_pixels[0]
+                    hand_data['wrist_x'] = float(wrist_pixel[0])
+                    hand_data['wrist_y'] = float(wrist_pixel[1])
+                    hand_data['wrist_z'] = float(wrist_norm[2]) # Use the raw Z value
+
+                # --- 2. Overall Hand Orientation ---
+                # Requires at least 3 points to define a plane/orientation
+                if len(landmarks_norm) > 9: # Need Wrist, Index MCP, Middle MCP etc.
+                    try:
+                        # Define axes based on landmarks (normalized coords)
+                        p0, p5, p9, p17 = landmarks_norm[0], landmarks_norm[5], landmarks_norm[9], landmarks_norm[17]
+
+                        # Y-axis: Up the arm/hand (Wrist to Middle MCP)
+                        vec_0_9 = calculate_vector(p0, p9)
+                        norm_vec_0_9 = np.linalg.norm(vec_0_9)
+                        if norm_vec_0_9 < 1e-6: raise ValueError("Wrist and Middle MCP too close")
+                        hand_y_axis = vec_0_9 / norm_vec_0_9
+
+                        # X-axis: Across the knuckles (approximate: Pinky MCP to Index MCP)
+                        # Flip direction if hand is flipped relative to expectation? MediaPipe is usually consistent.
+                        vec_17_5 = calculate_vector(p17, p5)
+                        # Project onto plane normal to hand_y_axis to make it orthogonal
+                        hand_x_axis_initial = vec_17_5 - np.dot(vec_17_5, hand_y_axis) * hand_y_axis
+                        norm_hand_x_initial = np.linalg.norm(hand_x_axis_initial)
+                        if norm_hand_x_initial < 1e-6: raise ValueError("MCPs are collinear with wrist->MCP vector")
+                        hand_x_axis = hand_x_axis_initial / norm_hand_x_initial
+
+                        # Z-axis: Palm normal (using cross product)
+                        hand_z_axis = np.cross(hand_x_axis, hand_y_axis) # Check handedness of coord system?
+
+                        # --- Calculate Pitch, Yaw, Roll (relative to camera frame) ---
+                        # Assuming Camera looks along +Z, Y is Up, X is Right (OpenCV/MediaPipe view)
+                        # If frame is flipped horizontally later, this calculation *might* need adjustment
+                        # depending on desired intuitive mapping. Let's assume calculation based on *unflipped* coordinates system.
+
+                        # Pitch: Angle of hand's Y-axis with the camera's XY plane (arcsin of Y component)
+                        # A level hand (Y-axis mostly in XZ plane) should have pitch near 0.
+                        # A hand pointing up (Y-axis along camera Y) should have pitch near pi/2.
+                        # A hand pointing down (Y-axis along camera -Y) should have pitch near -pi/2.
+                        hand_data['hand_pitch'] = float(np.arcsin(np.clip(hand_y_axis[1], -1.0, 1.0)))
+                        # **** REMAPPING PITCH TO 0-Pi ****
+                        # Original pitch: -pi/2 (down) to +pi/2 (up)
+                        # New range: 0 (down) to pi (up)
+                        # hand_data['hand_pitch'] = hand_data['hand_pitch'] + np.pi / 2
+                        # Let's stick to -pi/2 to +pi/2 for now, config handles mapping.
+
+
+                        # Yaw: Angle of hand's Y-axis projected onto camera's XZ plane, relative to camera Z-axis (forward)
+                        # Use atan2(x, z) for full -pi to +pi range relative to +Z axis.
+                        # Pointing forward (along +Z) -> yaw = 0
+                        # Pointing right (along +X) -> yaw = pi/2
+                        # Pointing left (along -X) -> yaw = -pi/2
+                        # Pointing backward (along -Z) -> yaw = +/-pi
+                        proj_y_on_xz = np.array([hand_y_axis[0], 0, hand_y_axis[2]])
+                        if np.linalg.norm(proj_y_on_xz) > 1e-6:
+                            hand_data['hand_yaw'] = float(np.arctan2(proj_y_on_xz[0], proj_y_on_xz[2]))
+                        else: # Hand pointing straight up/down relative to camera
+                            hand_data['hand_yaw'] = 0.0
+                        # **** REMAPPING YAW TO 0-Pi ****
+                        # Original Yaw: -pi (left-back) to +pi (right-back), via 0 (forward)
+                        # How to map this to 0-180 deg rotation? Ambiguous.
+                        # Maybe map the *absolute* angle from forward? abs(yaw)? Range 0 to pi.
+                        # hand_data['hand_yaw'] = float(np.abs(hand_data['hand_yaw']))
+                        # Let's stick to -pi/2 to +pi/2 requested in config default example, config handles mapping.
+
+                        # Roll: Angle of hand's X-axis projected onto camera's XY plane, relative to camera X-axis (right)
+                        # Use atan2(y, x) for full -pi to +pi range relative to +X axis.
+                        # Palm flat, fingers right (X-axis along +X) -> roll = 0
+                        # Palm flat, fingers up (X-axis along -Y) -> roll = -pi/2
+                        # Palm flat, fingers down (X-axis along +Y) -> roll = pi/2
+                        proj_x_on_xy = np.array([hand_x_axis[0], hand_x_axis[1], 0])
+                        if np.linalg.norm(proj_x_on_xy) > 1e-6:
+                             hand_data['hand_roll'] = float(np.arctan2(proj_x_on_xy[1], proj_x_on_xy[0]))
+                        else: # Hand edge-on to camera horizontally
+                            hand_data['hand_roll'] = 0.0
+
+                    except (ZeroDivisionError, ValueError, IndexError) as e:
+                        # print(f"Warning: Could not calculate hand orientation for hand {i}: {e}")
+                        # Keep defaults 0.0
+                         pass # Silence warning for now
+
+                # --- 3. Finger Curl (Angle Based) ---
+                try:
+                    # Use Wrist (0) to Middle MCP (9) as reference distance for normalization if needed
+                    # Ensure landmarks_norm has enough points (21)
+                    if len(landmarks_norm) < 21: raise IndexError("Not enough landmarks for curl calculation.")
+
+                    ref_dist_vec = calculate_vector(landmarks_norm[0], landmarks_norm[9])
+                    ref_dist = np.linalg.norm(ref_dist_vec)
+                    if ref_dist < 1e-6: ref_dist = 1.0 # Avoid division by zero, use 1 as fallback scale
+
+                    # Thumb: Angle at MCP (2) between vectors 2->1 (CMC) and 2->3 (IP) - This is tricky
+                    # Alternative: Angle at IP(3) between 3->2(MCP) and 3->4(Tip)
+                    v32 = calculate_vector(landmarks_norm[3], landmarks_norm[2])
+                    v34 = calculate_vector(landmarks_norm[3], landmarks_norm[4])
+                    hand_data['thumb_angle_curl'] = float(calculate_angle_between_vectors(v32, v34))
+
+                    # Index: Angle at PIP (6) between vectors 6->5 (MCP) and 6->7 (DIP)
+                    v65 = calculate_vector(landmarks_norm[6], landmarks_norm[5])
+                    v67 = calculate_vector(landmarks_norm[6], landmarks_norm[7])
+                    hand_data['index_angle_curl'] = float(calculate_angle_between_vectors(v65, v67))
+
+                    # Middle: Angle at PIP (10) between vectors 10->9 (MCP) and 10->11 (DIP)
+                    v10_9 = calculate_vector(landmarks_norm[10], landmarks_norm[9])
+                    v10_11 = calculate_vector(landmarks_norm[10], landmarks_norm[11])
+                    hand_data['middle_angle_curl'] = float(calculate_angle_between_vectors(v10_9, v10_11))
+
+                    # Ring: Angle at PIP (14) between vectors 14->13 (MCP) and 14->15 (DIP)
+                    v14_13 = calculate_vector(landmarks_norm[14], landmarks_norm[13])
+                    v14_15 = calculate_vector(landmarks_norm[14], landmarks_norm[15])
+                    hand_data['ring_angle_curl'] = float(calculate_angle_between_vectors(v14_13, v14_15))
+
+                    # Pinky: Angle at PIP (18) between vectors 18->17 (MCP) and 18->19 (DIP)
+                    v18_17 = calculate_vector(landmarks_norm[18], landmarks_norm[17])
+                    v18_19 = calculate_vector(landmarks_norm[18], landmarks_norm[19])
+                    hand_data['pinky_angle_curl'] = float(calculate_angle_between_vectors(v18_17, v18_19))
 
                 except (ZeroDivisionError, ValueError, IndexError) as e:
-                    print(f"Warning: Could not calculate hand orientation: {e}")
-                    # Keep defaults 0.0
+                    # Keep default values (pi = straight) if calculation fails
+                    # print(f"Warning: Could not calculate finger angle curl for hand {i}: {e}")
+                    pass # Silence warning
 
-            # --- 3. Finger Curl (Angle Based) ---
-            try:
-                # landmarks_norm contains the (x, y, z) coordinates
-                ref_dist = calculate_distance(landmarks_norm[0], landmarks_norm[9])
-                if ref_dist < 1e-6: ref_dist = 1.0 # Avoid division by zero
-                # Thumb: Angle at MCP (2) between vectors 2->1 (CMC) and 2->3 (IP)
-                v32 = calculate_vector(landmarks_norm[3], landmarks_norm[2])
-                v34 = calculate_vector(landmarks_norm[3], landmarks_norm[4])
-                tracking_data['thumb_angle_curl'] = float(calculate_angle_between_vectors(v32, v34))
+                # --- 4. Finger Spread (Angle between MCP vectors from Wrist) ---
+                try:
+                    if len(landmarks_norm) < 21: raise IndexError("Not enough landmarks for spread calculation.")
+                    p0, p1, p5, p9, p13, p17 = landmarks_norm[0], landmarks_norm[1], landmarks_norm[5], landmarks_norm[9], landmarks_norm[13], landmarks_norm[17]
 
-                # Index: Angle at PIP (6) between vectors 6->5 (MCP) and 6->7 (DIP)
-                v65 = calculate_vector(landmarks_norm[6], landmarks_norm[5])
-                v67 = calculate_vector(landmarks_norm[6], landmarks_norm[7])
-                tracking_data['index_angle_curl'] = float(calculate_angle_between_vectors(v65, v67))
+                    vec_0_1 = calculate_vector(p0, p1)   # Wrist to Thumb CMC
+                    vec_0_5 = calculate_vector(p0, p5)   # Wrist to Index MCP
+                    vec_0_9 = calculate_vector(p0, p9)   # Wrist to Middle MCP
+                    vec_0_13 = calculate_vector(p0, p13) # Wrist to Ring MCP
+                    vec_0_17 = calculate_vector(p0, p17) # Wrist to Pinky MCP
 
-                # Middle: Angle at PIP (10) between vectors 10->9 (MCP) and 10->11 (DIP)
-                v10_9 = calculate_vector(landmarks_norm[10], landmarks_norm[9])
-                v10_11 = calculate_vector(landmarks_norm[10], landmarks_norm[11])
-                tracking_data['middle_angle_curl'] = float(calculate_angle_between_vectors(v10_9, v10_11))
-
-                # Ring: Angle at PIP (14) between vectors 14->13 (MCP) and 14->15 (DIP)
-                v14_13 = calculate_vector(landmarks_norm[14], landmarks_norm[13])
-                v14_15 = calculate_vector(landmarks_norm[14], landmarks_norm[15])
-                tracking_data['ring_angle_curl'] = float(calculate_angle_between_vectors(v14_13, v14_15))
-
-                # Pinky: Angle at PIP (18) between vectors 18->17 (MCP) and 18->19 (DIP)
-                v18_17 = calculate_vector(landmarks_norm[18], landmarks_norm[17])
-                v18_19 = calculate_vector(landmarks_norm[18], landmarks_norm[19])
-                tracking_data['pinky_angle_curl'] = float(calculate_angle_between_vectors(v18_17, v18_19))
-
-            except (ZeroDivisionError, ValueError, IndexError) as e:
-                # Keep default values (pi = straight) if calculation fails
-                print(f"Warning: Could not calculate finger angle curl: {e}")
-
-            # --- 4. Finger Spread (Angle between MCP vectors from Wrist) ---
-            try:
-                vec_0_1 = calculate_vector(landmarks_norm[0], landmarks_norm[1])   # Wrist to Thumb CMC
-                vec_0_5 = calculate_vector(landmarks_norm[0], landmarks_norm[5])   # Wrist to Index MCP
-                vec_0_9 = calculate_vector(landmarks_norm[0], landmarks_norm[9])   # Wrist to Middle MCP
-                vec_0_13 = calculate_vector(landmarks_norm[0], landmarks_norm[13]) # Wrist to Ring MCP
-                vec_0_17 = calculate_vector(landmarks_norm[0], landmarks_norm[17]) # Wrist to Pinky MCP
-
-                tracking_data['thumb_index_spread'] = float(calculate_angle_between_vectors(vec_0_1, vec_0_5))
-                tracking_data['index_middle_spread'] = float(calculate_angle_between_vectors(vec_0_5, vec_0_9))
-                tracking_data['middle_ring_spread'] = float(calculate_angle_between_vectors(vec_0_9, vec_0_13))
-                tracking_data['ring_pinky_spread'] = float(calculate_angle_between_vectors(vec_0_13, vec_0_17))
-            except (ZeroDivisionError, ValueError, IndexError) as e:
-                 print(f"Warning: Could not calculate finger spread angles: {e}")
+                    # Calculate angles only if vectors are valid
+                    hand_data['thumb_index_spread'] = float(calculate_angle_between_vectors(vec_0_1, vec_0_5))
+                    hand_data['index_middle_spread'] = float(calculate_angle_between_vectors(vec_0_5, vec_0_9))
+                    hand_data['middle_ring_spread'] = float(calculate_angle_between_vectors(vec_0_9, vec_0_13))
+                    hand_data['ring_pinky_spread'] = float(calculate_angle_between_vectors(vec_0_13, vec_0_17))
+                except (ZeroDivisionError, ValueError, IndexError) as e:
+                     # print(f"Warning: Could not calculate finger spread angles for hand {i}: {e}")
+                     pass # Silence warning
 
 
-            # --- 5. Pinch Distances (Tip to Tip) ---
-            # Use normalized coordinates, normalize by same reference distance as curls
-            try:
-                dist_4_8 = calculate_distance(landmarks_norm[4], landmarks_norm[8])
-                dist_4_12 = calculate_distance(landmarks_norm[4], landmarks_norm[12])
-                dist_4_16 = calculate_distance(landmarks_norm[4], landmarks_norm[16])
-                dist_4_20 = calculate_distance(landmarks_norm[4], landmarks_norm[20])
+                # --- 5. Pinch Distances (Tip to Tip) ---
+                # Use normalized coordinates, normalize by same reference distance as curls
+                try:
+                    if len(landmarks_norm) < 21: raise IndexError("Not enough landmarks for pinch calculation.")
+                    # Use ref_dist calculated earlier (wrist to middle MCP)
+                    if ref_dist < 1e-6: ref_dist = 1.0 # Recalculate or fallback if needed
 
-                tracking_data['thumb_index_pinch'] = float(dist_4_8 / ref_dist)
-                tracking_data['thumb_middle_pinch'] = float(dist_4_12 / ref_dist)
-                tracking_data['thumb_ring_pinch'] = float(dist_4_16 / ref_dist)
-                tracking_data['thumb_pinky_pinch'] = float(dist_4_20 / ref_dist)
-            except (ZeroDivisionError, ValueError, IndexError) as e:
-                 print(f"Warning: Could not calculate pinch distances: {e}")
+                    p4, p8, p12, p16, p20 = landmarks_norm[4], landmarks_norm[8], landmarks_norm[12], landmarks_norm[16], landmarks_norm[20]
 
+                    dist_4_8 = calculate_distance(p4, p8)
+                    dist_4_12 = calculate_distance(p4, p12)
+                    dist_4_16 = calculate_distance(p4, p16)
+                    dist_4_20 = calculate_distance(p4, p20)
 
-        # Return the processed (potentially flipped) frame and the comprehensive tracking data
-        return frame, tracking_data
+                    hand_data['thumb_index_pinch'] = float(dist_4_8 / ref_dist)
+                    hand_data['thumb_middle_pinch'] = float(dist_4_12 / ref_dist)
+                    hand_data['thumb_ring_pinch'] = float(dist_4_16 / ref_dist)
+                    hand_data['thumb_pinky_pinch'] = float(dist_4_20 / ref_dist)
+                except (ZeroDivisionError, ValueError, IndexError) as e:
+                     # print(f"Warning: Could not calculate pinch distances for hand {i}: {e}")
+                     pass # Silence warning
 
-    def draw_visuals(self, frame, tracking_data):
-        """Draws landmarks and other visuals onto the frame."""
-        if tracking_data['found'] and self.results.multi_hand_landmarks:
-            handLms = self.results.multi_hand_landmarks[0] # Draw only first hand for now
-            if self.display_config.get('draw_landmarks', True):
-                # Draw basic landmarks and connections
-                self.mpDraw.draw_landmarks(frame, handLms,
-                                           self.mpHands.HAND_CONNECTIONS if self.display_config.get('draw_connections', True) else None)
+                # Add this hand's data to the list
+                all_hands_data.append(hand_data)
 
-            # Highlight the centroid landmark used for X/Y control
-            centroid_lm_id = self.config.get('centroid_landmark_id', 0)
-            try:
-                cx = int(tracking_data['centroid_x'])
-                cy = int(tracking_data['centroid_y'])
-                cv2.circle(frame, (cx, cy), 10, (0, 0, 255), cv2.FILLED) # Red circle for centroid
-            except Exception:
-                pass # Failed to draw centroid
+        # If fewer hands were detected than max_num_hands, fill remaining slots with default data
+        while len(all_hands_data) < self.config.get('max_num_hands', 1):
+             all_hands_data.append(self._get_default_tracking_data())
 
-            # Example: Draw line for pinch distance (Thumb tip to Index tip)
-            # if tracking_data.get('all_landmarks_pixels') and len(tracking_data['all_landmarks_pixels']) > 8:
-            #    try:
-            #        p_thumb = tuple(tracking_data['all_landmarks_pixels'][4])
-            #        p_index = tuple(tracking_data['all_landmarks_pixels'][8])
-            #        cv2.line(frame, p_thumb, p_index, (255, 255, 0), 2) # Cyan line
-            #    except Exception:
-            #        pass
+        # Return the processed (potentially flipped) frame and the list of tracking data
+        return frame, all_hands_data
+
+    def draw_visuals(self, frame, all_hands_data):
+        """Draws landmarks and other visuals onto the frame for all detected hands."""
+        for i, hand_data in enumerate(all_hands_data):
+            if hand_data['found'] and hand_data['raw_hand_landmarks']:
+                # Determine color based on handedness for clarity
+                color = (0, 255, 0) # Default Green
+                handedness_label = hand_data.get('handedness', 'Unknown')
+                if handedness_label == 'Left':
+                    color = (255, 0, 0) # Blue for Left
+                elif handedness_label == 'Right':
+                    color = (0, 0, 255) # Red for Right
+
+                landmark_drawing_spec = self.mpDraw.DrawingSpec(color=color, thickness=1, circle_radius=2)
+                connection_drawing_spec = self.mpDraw.DrawingSpec(color=color, thickness=2)
+
+                if self.display_config.get('draw_landmarks', True):
+                    # Draw landmarks and connections for this hand
+                    self.mpDraw.draw_landmarks(
+                        frame,
+                        hand_data['raw_hand_landmarks'],
+                        self.mpHands.HAND_CONNECTIONS if self.display_config.get('draw_connections', True) else None,
+                        landmark_drawing_spec,
+                        connection_drawing_spec
+                    )
+
+                # Highlight the centroid landmark used for X/Y control
+                centroid_lm_id = self.config.get('centroid_landmark_id', 0)
+                try:
+                    # Use calculated pixel coords stored in hand_data
+                    cx = int(hand_data['centroid_x'])
+                    cy = int(hand_data['centroid_y'])
+                    # Draw with hand-specific color, maybe slightly larger
+                    cv2.circle(frame, (cx, cy), 8, color, cv2.FILLED)
+                    cv2.circle(frame, (cx, cy), 8, (255, 255, 255), 1) # White outline
+                except Exception:
+                    pass # Failed to draw centroid
+
+                # Draw handedness label near wrist
+                try:
+                    wrist_x = int(hand_data['wrist_x'])
+                    wrist_y = int(hand_data['wrist_y'])
+                    cv2.putText(frame, handedness_label, (wrist_x + 10, wrist_y - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                except Exception:
+                    pass
 
         return frame
 
     def close(self):
         """Releases resources."""
-        # self.hands.close() # Consider adding if performance issues arise or using static mode
+        if hasattr(self, 'hands') and hasattr(self.hands, 'close'):
+             self.hands.close()
         print("HandTracker closed.")

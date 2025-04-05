@@ -1,28 +1,49 @@
 # CamMIDI Configuration
 #
+# Calibration: Use the buttons in the UI ('Squeeze', 'Spread', 'Pinch Min/Max')
+# to set the 'min_input' and 'max_input' ranges for spread and pinch gestures.
+# Press 'Save Config' in the UI to make these changes permanent in this file.
+#
+# Centroid X/Y: The usable input range is automatically inset from the screen edges
+# by 12.5% on each side (configurable inset in main.py if needed). The 'min_input'
+# and 'max_input' fields for 'centroid_x'/'centroid_y' in this file are ignored.
+#
 # For sources using distances ('curl', 'pinch', 'wrist_z'):
 # - These are sensitive to hand size and camera distance.
 # - Values are often normalized relative to hand size (e.g., wrist-to-middle-MCP distance).
 # - **You MUST calibrate 'min_input' and 'max_input' for your setup!**
-#   Observe the raw values printed in the console or displayed on screen
-#   (you might need to temporarily add prints in mapper.py) to find your working range.
+#   (Use UI buttons for pinch/spread, manually edit for curl/z based on console/display values).
 # - 'invert: True' is common for curls/pinches (small distance = high MIDI value).
 #
 # For sources using angles ('pitch', 'yaw', 'roll', 'spread'):
-# - Values are typically in radians.
+# - Values are typically in radians. Pi = 3.14159..., Pi/2 = 1.5708...
 # - Ranges like -pi/2 to +pi/2 (-90 to +90 deg) or 0 to pi/4 (0 to 45 deg) are common starting points.
-# - Calibrate 'min_input' / 'max_input' based on your comfortable range of motion.
+# - Pitch/Yaw/Roll default range uses min_input=-pi/2, max_input=+pi/2.
+# - Calibrate 'min_input' / 'max_input' based on your comfortable range of motion (use UI for spread).
 #
 # MIDI:
-# - Set 'port_name' to your virtual MIDI port (e.g., "IAC Driver Bus 1" on macOS, "loopMIDI Port" on Windows).
+# - port_name: Your virtual MIDI port.
+# - smoothing_factor: 0.0 (none) to 0.99 (max). Default: 0.6
+#
+# Mappings:
+# - Processed PER HAND based on channel:
+#   - channel: 1 -> First detected hand
+#   - channel: 2 -> Second detected hand
+# - Implicit Channel 2 Mapping:
+#   If 'max_num_hands' > 1 in mediapipe config, any mapping for 'channel: 1'
+#   will be IMPLICITLY duplicated for 'channel: 2' using the second hand's data
+#   with the SAME CC number, UNLESS a mapping explicitly defines 'channel: 2'
+#   for the SAME 'source'. Explicit mappings always override implicit ones
+#   for a given source.
+# - Add 'comment' field for notes (optional).
 #
 camera:
   index: 0
-  width: 640
-  height: 480
+  width: 800
+  height: 460
 mediapipe:
   static_image_mode: false
-  max_num_hands: 1
+  max_num_hands: 2
   min_detection_confidence: 0.6
   min_tracking_confidence: 0.6
   centroid_landmark_id: 0
@@ -42,8 +63,8 @@ mappings:
   channel: 1
   cc: 2
   invert: false
-  min_input: 0
-  max_input: 3.141592653589793
+  min_input: -1.5707963267948966
+  max_input: 1.5707963267948966
 - source: hand_yaw
   channel: 1
   cc: 3
@@ -78,7 +99,7 @@ mappings:
   channel: 1
   cc: 9
   invert: true
-  min_input: 1.5
+  min_input: 1.7
   max_input: 3.1
 - source: thumb_angle_curl
   channel: 1
@@ -86,12 +107,48 @@ mappings:
   invert: true
   min_input: 1.8
   max_input: 3.0
+- source: index_middle_spread
+  channel: 1
+  cc: 12
+  invert: false
+  min_input: 0.10533948572736998
+  max_input: 0.15142017210243106
+- source: middle_ring_spread
+  channel: 1
+  cc: 13
+  invert: false
+  min_input: 0.10881606199554383
+  max_input: 0.13745882970552117
+- source: ring_pinky_spread
+  channel: 1
+  cc: 14
+  invert: false
+  min_input: 0.14086499904848934
+  max_input: 0.16125951279241682
 - source: thumb_index_pinch
   channel: 1
   cc: 1
   invert: true
-  min_input: 0.02
-  max_input: 0.25
+  min_input: 0.15231587903681937
+  max_input: 0.9986604789910181
+- source: thumb_middle_pinch
+  channel: 1
+  cc: 16
+  invert: true
+  min_input: 0.18255603055746497
+  max_input: 1.161913310297394
+- source: thumb_ring_pinch
+  channel: 1
+  cc: 17
+  invert: true
+  min_input: 0.20397613819790558
+  max_input: 1.1479221275576008
+- source: thumb_pinky_pinch
+  channel: 1
+  cc: 18
+  invert: true
+  min_input: 0.12643578116891813
+  max_input: 1.0710734490530684
 display:
   show_window: true
   draw_landmarks: true
