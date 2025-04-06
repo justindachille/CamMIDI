@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     'midi': {
         'port_name': "IAC Driver Bus 1",
         'smoothing_factor': 0.6,
+        'force_channel1_hand': 'Right',
     },
     'mappings': [
         # --- Basic Position ---
@@ -187,7 +188,7 @@ def load_config(config_path='config.yaml', force_defaults=False):
 def save_config(config, config_path='config.yaml'):
      """Saves the current configuration to YAML file."""
      try:
-         # Add comments before saving the default config for the first time
+         # Add comments before saving
          comment = """# CamMIDI Configuration
 #
 # Calibration: Use the buttons in the UI ('Squeeze', 'Spread', 'Pinch Min/Max')
@@ -195,7 +196,7 @@ def save_config(config, config_path='config.yaml'):
 # Press 'Save Config' in the UI to make these changes permanent in this file.
 #
 # Centroid X/Y: The usable input range is automatically inset from the screen edges
-# by 12.5% on each side (configurable inset in main.py if needed). The 'min_input'
+# by 12.5% on each side (configurable inset in mapper.py if needed). The 'min_input'
 # and 'max_input' fields for 'centroid_x'/'centroid_y' in this file are ignored.
 #
 # For sources using distances ('curl', 'pinch', 'wrist_z'):
@@ -214,27 +215,35 @@ def save_config(config, config_path='config.yaml'):
 # MIDI:
 # - port_name: Your virtual MIDI port.
 # - smoothing_factor: 0.0 (none) to 0.99 (max). Default: 0.6
+# - force_channel1_hand: Assigns Channel 1 based on handedness if two hands are present.
+#   Options: "None" (default, first detected hand is Ch1),
+#            "Left" (detected Left hand is Ch1, Right/Unknown is Ch2),
+#            "Right" (detected Right hand is Ch1, Left/Unknown is Ch2).
+#   A single detected hand always uses Channel 1 regardless of this setting.
 #
 # Mappings:
-# - Processed PER HAND based on channel:
-#   - channel: 1 -> First detected hand
-#   - channel: 2 -> Second detected hand
+# - Processed PER HAND based on channel assignment logic (see force_channel1_hand).
+# - channel: 1 -> Hand assigned to Channel 1
+# - channel: 2 -> Hand assigned to Channel 2
 # - Implicit Channel 2 Mapping:
-#   If 'max_num_hands' > 1 in mediapipe config, any mapping for 'channel: 1'
+#   If 'max_num_hands' > 1, any mapping for 'channel: 1'
 #   will be IMPLICITLY duplicated for 'channel: 2' using the second hand's data
 #   with the SAME CC number, UNLESS a mapping explicitly defines 'channel: 2'
 #   for the SAME 'source'. Explicit mappings always override implicit ones
-#   for a given source.
+#   for a given source/channel/cc combination.
 # - Add 'comment' field for notes (optional).
 #
-"""         # Convert numpy types to standard Python types for YAML saving
+"""
+         # Convert numpy types to standard Python types for YAML saving
          config_to_save = copy.deepcopy(config)
-         for mapping in config_to_save.get('mappings',[]):
-            for key, value in mapping.items():
-                 if isinstance(value, np.integer):
-                     mapping[key] = int(value)
-                 elif isinstance(value, np.floating):
-                     mapping[key] = float(value)
+         if 'mappings' in config_to_save and isinstance(config_to_save['mappings'], list):
+             for mapping in config_to_save['mappings']:
+                 if isinstance(mapping, dict):
+                     for key, value in mapping.items():
+                         if isinstance(value, np.integer):
+                             mapping[key] = int(value)
+                         elif isinstance(value, np.floating):
+                             mapping[key] = float(value)
 
          with open(config_path, 'w') as f:
              f.write(comment)
@@ -253,9 +262,24 @@ if __name__ == '__main__':
 
     # Test loading from file (if exists)
     print("\n--- Loading Config (from file if exists, else default) ---")
-    cfg_normal = load_config()
+    # Ensure a dummy file doesn't exist for this test or rename it
+    dummy_path = 'test_config_load.yaml'
+    if os.path.exists(dummy_path): os.remove(dummy_path)
+    cfg_normal = load_config(config_path=dummy_path) # Will create file with defaults
     # print(yaml.dump(cfg_normal, sort_keys=False))
 
     # Example of accessing a value
-    print(f"\nSmoothing Factor (Normal Load): {cfg_normal['midi']['smoothing_factor']}")
-    print(f"Max Num Hands (Normal Load): {cfg_normal['mediapipe']['max_num_hands']}")
+    print(f"\nSmoothing Factor (Normal Load): {cfg_normal.get('midi', {}).get('smoothing_factor')}")
+    print(f"Max Num Hands (Normal Load): {cfg_normal.get('mediapipe', {}).get('max_num_hands')}")
+    print(f"Force Channel 1 Hand (Normal Load): {cfg_normal.get('midi', {}).get('force_channel1_hand')}")
+
+    # Test saving after modification
+    if 'midi' in cfg_normal:
+        cfg_normal['midi']['force_channel1_hand'] = "Left"
+        cfg_normal['mappings'].append({'source': 'test', 'channel': 1, 'cc': 99})
+        save_config(cfg_normal, dummy_path)
+        print(f"\n--- Loading Config ({dummy_path} after modification) ---")
+        cfg_reloaded = load_config(config_path=dummy_path)
+        print(f"Force Channel 1 Hand (Reloaded): {cfg_reloaded.get('midi', {}).get('force_channel1_hand')}")
+        # print(yaml.dump(cfg_reloaded, sort_keys=False))
+        if os.path.exists(dummy_path): os.remove(dummy_path) # Clean up test file

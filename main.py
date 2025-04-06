@@ -307,7 +307,7 @@ def main():
     if args.use_defaults: print("Info: --use-defaults flag detected. Ignoring config.yaml.")
 
     tracker = HandTracker(config)
-    mapper = MidiMapper(config) # Mapper init reads max_hands and explicit sources
+    mapper = MidiMapper(config) # Mapper reads force_channel1_hand config now
     midi_sender = MidiSender(config)
 
     # --- Camera Setup ---
@@ -341,10 +341,11 @@ def main():
     print("Press 'Save Config' button in UI to save calibrated values.")
     print("Ensure your DAW is configured to receive MIDI from:", config.get('midi', {}).get('port_name', 'N/A'))
     max_h = config.get('mediapipe', {}).get('max_num_hands', 1)
+    force_ch1 = config.get('midi', {}).get('force_channel1_hand', 'None')
     print(f"Tracking up to {max_h} hands.")
-    print(" Channel 1 -> First Detected Hand, Channel 2 -> Second Detected Hand.")
+    print(f" Channel 1 Assignment: {force_ch1} hand preference (default: first detected)")
     if max_h > 1:
-        print(f" Implicit Ch2 mapping: ON (uses SAME CC as Channel 1). Explicit Ch2 mappings override.") # Updated message
+        print(f" Implicit Ch2 mapping: ON (uses SAME CC as Channel 1). Explicit Ch2 mappings override.")
     print("---")
     print("CALIBRATION NOTE: Adjust 'min_input'/'max_input' in config.yaml (or use UI buttons)!")
     print("---")
@@ -352,11 +353,14 @@ def main():
     # --- Main Loop ---
     try:
         action_display_start_time = 0
-        last_action_for_draw = None
+        last_action_for_draw = None # Used for button feedback visualization
         while True:
             # (Frame capture)
             success, frame = cap.read()
-            if not success or frame is None: continue
+            if not success or frame is None:
+                 print("Warning: Failed to capture frame.")
+                 time.sleep(0.1) # Avoid busy-looping on error
+                 continue
 
             # 1. Track Hands
             # Important: process_frame might flip the frame based on config
@@ -365,63 +369,72 @@ def main():
             # --- Handle Calibration Actions ---
             if calibration_action:
                 current_action = calibration_action
+                last_action_for_draw = current_action # Store for visual feedback
+                action_display_start_time = time.time()
                 calibration_action = None # Reset flag immediately
                 config_updated = False
 
-                # Find the first detected hand for calibration data
-                first_hand = None
-                for hand_data in all_hands_data:
-                    if hand_data.get('found', False):
-                        first_hand = hand_data
-                        break
+                # Find the first *detected* hand for calibration data
+                # Calibration always uses the first physically detected hand (index 0 if found)
+                first_hand_data = None
+                first_hand_index = -1
+                for idx, hd in enumerate(all_hands_data):
+                    if hd.get('found', False):
+                        first_hand_data = hd
+                        first_hand_index = idx
+                        break # Found the first one
 
-                if first_hand is None:
+                if first_hand_data is None:
                     msg = "Calibration failed: No hand detected."
                     print(msg)
                     last_calibrated_message = msg
                     message_display_time = time.time()
                 else:
                      # --- Perform Calibration based on current_action ---
-                     # (Spread actions)
+                     # (Spread actions using first detected hand's data)
                      if current_action == 'calib_spread_min':
-                         config_updated |= update_config_value(config, 'index_middle_spread', 'min_input', first_hand['index_middle_spread'])
-                         config_updated |= update_config_value(config, 'middle_ring_spread', 'min_input', first_hand['middle_ring_spread'])
-                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'min_input', first_hand['ring_pinky_spread'])
+                         # Calibrate all spread sources based on the first detected hand's current state
+                         config_updated |= update_config_value(config, 'index_middle_spread', 'min_input', first_hand_data.get('index_middle_spread', 0.0))
+                         config_updated |= update_config_value(config, 'middle_ring_spread', 'min_input', first_hand_data.get('middle_ring_spread', 0.0))
+                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'min_input', first_hand_data.get('ring_pinky_spread', 0.0))
                      elif current_action == 'calib_spread_max':
-                         config_updated |= update_config_value(config, 'index_middle_spread', 'max_input', first_hand['index_middle_spread'])
-                         config_updated |= update_config_value(config, 'middle_ring_spread', 'max_input', first_hand['middle_ring_spread'])
-                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'max_input', first_hand['ring_pinky_spread'])
+                         config_updated |= update_config_value(config, 'index_middle_spread', 'max_input', first_hand_data.get('index_middle_spread', np.pi/4))
+                         config_updated |= update_config_value(config, 'middle_ring_spread', 'max_input', first_hand_data.get('middle_ring_spread', np.pi/5))
+                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'max_input', first_hand_data.get('ring_pinky_spread', np.pi/5))
                      # (Pinch actions - T-Idx, T-Mid, T-Ring, T-Pinky)
-                     elif current_action == 'calib_ti_pinch_min': config_updated |= update_config_value(config, 'thumb_index_pinch', 'min_input', first_hand['thumb_index_pinch'])
-                     elif current_action == 'calib_ti_pinch_max': config_updated |= update_config_value(config, 'thumb_index_pinch', 'max_input', first_hand['thumb_index_pinch'])
-                     elif current_action == 'calib_tm_pinch_min': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'min_input', first_hand['thumb_middle_pinch'])
-                     elif current_action == 'calib_tm_pinch_max': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'max_input', first_hand['thumb_middle_pinch'])
-                     elif current_action == 'calib_tr_pinch_min': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'min_input', first_hand['thumb_ring_pinch'])
-                     elif current_action == 'calib_tr_pinch_max': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'max_input', first_hand['thumb_ring_pinch'])
-                     elif current_action == 'calib_tp_pinch_min': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'min_input', first_hand['thumb_pinky_pinch'])
-                     elif current_action == 'calib_tp_pinch_max': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'max_input', first_hand['thumb_pinky_pinch'])
-
+                     elif current_action == 'calib_ti_pinch_min': config_updated |= update_config_value(config, 'thumb_index_pinch', 'min_input', first_hand_data.get('thumb_index_pinch', 0.01))
+                     elif current_action == 'calib_ti_pinch_max': config_updated |= update_config_value(config, 'thumb_index_pinch', 'max_input', first_hand_data.get('thumb_index_pinch', 0.3))
+                     elif current_action == 'calib_tm_pinch_min': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'min_input', first_hand_data.get('thumb_middle_pinch', 0.02))
+                     elif current_action == 'calib_tm_pinch_max': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'max_input', first_hand_data.get('thumb_middle_pinch', 0.35))
+                     elif current_action == 'calib_tr_pinch_min': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'min_input', first_hand_data.get('thumb_ring_pinch', 0.03))
+                     elif current_action == 'calib_tr_pinch_max': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'max_input', first_hand_data.get('thumb_ring_pinch', 0.4))
+                     elif current_action == 'calib_tp_pinch_min': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'min_input', first_hand_data.get('thumb_pinky_pinch', 0.05))
+                     elif current_action == 'calib_tp_pinch_max': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'max_input', first_hand_data.get('thumb_pinky_pinch', 0.45))
                      # (Save action)
                      elif current_action == 'save_config':
                          save_config(config, config_path)
                          last_calibrated_message = f"Configuration saved to {config_path}"
                          message_display_time = time.time()
-                         config_updated = False # No mapper update needed
+                         config_updated = False # No mapper update needed for save
 
-                     # Update mapper if config changed
+                     # Update mapper if config values (min/max input) changed
                      if config_updated:
                           print("Config updated by calibration, refreshing mapper.")
-                          mapper.update_mappings(config['mappings'])
+                          # Pass only the mappings list to the update method
+                          mapper.update_mappings(config.get('mappings', []))
 
 
             # 2. Map MIDI (using potentially updated mappings)
             # Pass the *actual* frame dimensions to the mapper for centroid calculation
+            # Returns: {(channel, cc): {'value': value, 'hand_index': index}}
             midi_map = mapper.calculate_midi(all_hands_data, actual_width, actual_height)
 
             # 3. Send MIDI
             if midi_sender and midi_sender.port_opened:
-                 for (ch, cc), val in midi_map.items():
-                      midi_sender.send_cc(ch, cc, val)
+                 # Adapt the loop to extract the value from the data dictionary
+                 for (ch, cc), data in midi_map.items():
+                      val = data['value'] # Extract value
+                      midi_sender.send_cc(ch, cc, val) # Send it
 
             # 4. Visual Feedback
             if display_enabled:
@@ -430,70 +443,85 @@ def main():
                 display_frame = tracker.draw_visuals(display_frame, all_hands_data)
 
                 # FPS
+                # ... (FPS drawing code remains the same) ...
                 cTime = time.time(); delta_time = cTime - pTime
                 fps = 1 / delta_time if delta_time > 0 else 0; pTime = cTime
                 if config.get('display', {}).get('show_fps', True):
                     draw_text_outlined(display_frame, f"FPS: {int(fps)}", (10, 30),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), (0,0,0), 2)
 
-                # MIDI Debug Display (remains the same logic)
-                y_offset_left, y_offset_right = 60, 60
-                font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                fg_col, bg_col = (255, 255, 255), (0, 0, 0)
-                margin = 10
-                messages_left = []  # Messages for the left side (Hand 2)
-                messages_right = [] # Messages for the right side (Hand 1)
 
-                # Build source lookup (same as before)
+                # --- MIDI Debug Display (Updated Logic) ---
+                messages_left = []  # Channel 2 messages (drawn on left)
+                messages_right = [] # Channel 1 messages (drawn on right)
+
+                # Build source lookup (remains the same logic as before)
                 source_lookup = {}
-                explicit_ch2_sources = mapper.explicit_ch2_sources
+                explicit_ch2_sources = mapper.explicit_ch2_sources # Get from mapper instance
+                max_h_conf = config.get('mediapipe', {}).get('max_num_hands', 1) # Get max_hands from config
                 for mapping in config.get('mappings', []):
-                    # ... (logic to populate source_lookup - unchanged) ...
                     if not isinstance(mapping, dict): continue
                     m_ch = mapping.get('channel')
                     m_cc = mapping.get('cc')
                     m_src = mapping.get('source')
                     if m_ch is None or m_cc is None or m_src is None: continue
-                    if m_ch == 1:
-                        source_lookup[(1, m_cc)] = (m_src, False)
-                        if max_h > 1 and m_src not in explicit_ch2_sources:
-                            has_explicit_conflict = any(m2.get('channel') == 2 and m2.get('cc') == m_cc for m2 in config.get('mappings', []) if isinstance(m2, dict))
-                            if not has_explicit_conflict:
-                                source_lookup[(2, m_cc)] = (m_src, True)
-                    elif m_ch == 2:
-                        source_lookup[(2, m_cc)] = (m_src, False)
 
-                for hand_index, hand_data in enumerate(all_hands_data):
-                    if not hand_data['found']: continue
-                    target_channel = hand_index + 1 # Channel 1 (index 0), Channel 2 (index 1)
-                    # Get detected handedness label primarily for display text
-                    detected_handedness = hand_data.get('handedness', 'Unknown')
-                    hand_label = f"H{target_channel}({detected_handedness[0]})" # e.g., H1(R), H2(L), H1(U)
+                    # Store primary mapping (Ch1 or explicit Ch2)
+                    source_lookup[(m_ch, m_cc)] = (m_src, False) # (source_name, is_implicit)
 
-                    for (ch, cc), val in midi_map.items():
-                        if ch == target_channel:
-                            source_info = source_lookup.get((ch, cc))
-                            source_name = f"Src?({ch},{cc})"
-                            mapping_type = ""
-                            if source_info:
-                                source_name, is_implicit = source_info
-                                if is_implicit: mapping_type = "[Impl]"
-                                elif ch == 2: mapping_type = "[Expl]"
+                    # If it's a Ch1 mapping and implicit Ch2 is possible, add potential implicit entry
+                    if m_ch == 1 and max_h_conf > 1 and m_src not in explicit_ch2_sources:
+                        # Check if an explicit Ch2 mapping ALREADY exists for the *same CC*
+                        has_explicit_conflict_cc = any(
+                            m2.get('channel') == 2 and m2.get('cc') == m_cc
+                            for m2 in config.get('mappings', []) if isinstance(m2, dict)
+                        )
+                        if not has_explicit_conflict_cc:
+                             # Add implicit mapping for Ch2, using same CC as Ch1
+                             source_lookup[(2, m_cc)] = (m_src, True) # Mark as implicit
 
-                            # Format text including detected handedness
-                            text = f"{hand_label}{mapping_type} {source_name} -> CC{cc}: {val}"
+                # --- Iterate through the MIDI map generated by mapper ---
+                for (ch, cc), data in midi_map.items():
+                    val = data['value']
+                    hand_index = data['hand_index'] # Get the *original detection index* of the hand
 
-                            # Assign to list based on target_channel (index)
-                            if target_channel == 1: # First hand's data goes to the right side
-                                messages_right.append(text)
-                            elif target_channel == 2: # Second hand's data goes to the left side
-                                messages_left.append(text)
+                    # Get corresponding hand data and handedness for display label
+                    if 0 <= hand_index < len(all_hands_data):
+                        hand_data = all_hands_data[hand_index]
+                        detected_handedness = hand_data.get('handedness', 'Unknown')
+                        # Use H1/H2 based on the *original detection index* for the label
+                        hand_label = f"H{hand_index + 1}({detected_handedness[0]})"
+                    else:
+                        hand_label = f"H?({ch})" # Fallback if hand_index is invalid (shouldn't happen)
+
+                    # Lookup source name based on the *output channel and CC*
+                    source_info = source_lookup.get((ch, cc))
+                    source_name = f"Src?({ch},{cc})"
+                    mapping_type = ""
+                    if source_info:
+                        source_name, is_implicit = source_info
+                        if is_implicit: mapping_type = "[Impl]"
+                        elif ch == 2: mapping_type = "[Expl]" # Explicit Ch2 mapping
+
+                    # Format the text string: HandLabel[Type] Source -> Ch CC: Value
+                    text = f"{hand_label}{mapping_type} {source_name} -> Ch{ch} CC{cc}: {val}"
+
+                    # Assign to display list based on the *output MIDI channel* (ch)
+                    if ch == 1:
+                        messages_right.append(text) # Channel 1 messages go on the right
+                    elif ch == 2:
+                        messages_left.append(text) # Channel 2 messages go on the left
 
                 # Draw messages from the lists
-                for text in messages_left: # Draw left-aligned
+                # ... (drawing logic remains the same, uses messages_left/messages_right) ...
+                y_offset_left, y_offset_right = 60, 60
+                font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                fg_col, bg_col = (255, 255, 255), (0, 0, 0)
+                margin = 10
+                for text in messages_left: # Draw left-aligned (Channel 2)
                      draw_text_outlined(display_frame, text, (margin, y_offset_left), font, scale, fg_col, bg_col, thick)
                      y_offset_left += 18
-                for text in messages_right: # Draw right-aligned
+                for text in messages_right: # Draw right-aligned (Channel 1)
                     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
                     tx = max(0, actual_width - tw - margin) # Align to right
                     draw_text_outlined(display_frame, text, (tx, y_offset_right), font, scale, fg_col, bg_col, thick)
@@ -505,19 +533,32 @@ def main():
                 if last_action_for_draw and (time.time() - action_display_start_time > 0.2):
                     last_action_for_draw = None # Stop highlighting
 
-                # Pass the action flag to draw_buttons for visual feedback
-                calibration_action_for_draw = last_action_for_draw # Use the temp variable
+                # Pass the action flag (stored in last_action_for_draw) to draw_buttons
+                # draw_buttons function needs slight modification to accept this
+                # Let's assume draw_buttons checks against a global or passed state
+                # No, draw_buttons already uses the global `calibration_action` for *brief* highlight
+                # We need to update draw_buttons or use the `last_action_for_draw` state here
+                # Reverting draw_buttons to just use hover effect for simplicity now.
+                # The brief flash on click is handled by the global `calibration_action` logic reset above.
                 draw_buttons(display_frame) # Hover effect handled by mouse callback updating hovered_button_key
 
                 # --- Draw Calibration Status Message ---
                 # ... (remains the same) ...
+                font_status, scale_status, thick_status = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
                 if last_calibrated_message and (time.time() - message_display_time < 3.0):
-                     (tw, th), _ = cv2.getTextSize(last_calibrated_message, font, scale, thick)
+                     (tw, th), _ = cv2.getTextSize(last_calibrated_message, font_status, scale_status, thick_status)
                      tx = (actual_width - tw) // 2
-                     ty = y_offset_left + 10 # Position below left debug text
-                     draw_text_outlined(display_frame, last_calibrated_message, (tx, ty), font, scale, (0, 255, 255), bg_col, thick)
+                     # Position below the lowest possible button + some margin, or below left debug text?
+                     # Let's try below buttons. Find max button Y + height.
+                     max_button_y = 0
+                     for btn in buttons.values():
+                         if 'rect' in btn:
+                             max_button_y = max(max_button_y, btn['rect'][1] + btn['rect'][3])
+                     ty = max_button_y + 20 # Position below buttons
+
+                     draw_text_outlined(display_frame, last_calibrated_message, (tx, ty), font_status, scale_status, (0, 255, 255), bg_col, thick_status)
                 elif last_calibrated_message and (time.time() - message_display_time >= 3.0):
-                    last_calibrated_message = ""
+                    last_calibrated_message = "" # Clear message after timeout
 
 
                 # --- Show Frame ---
