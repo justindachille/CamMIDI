@@ -106,7 +106,64 @@ DEFAULT_CONFIG = {
         { 'source': 'thumb_middle_pinch', 'channel': 1, 'cc': 15, 'invert': True, 'min_input': 0.03, 'max_input': 0.3 },
         { 'source': 'thumb_ring_pinch', 'channel': 1, 'cc': 16, 'invert': True, 'min_input': 0.05, 'max_input': 0.35 },
         { 'source': 'thumb_pinky_pinch', 'channel': 1, 'cc': 17, 'invert': True, 'min_input': 0.07, 'max_input': 0.4 },
-
+        {
+            'source': 'head_yaw', # Face Yaw (-pi/2 to pi/2 approx)
+            'channel': 3, 'cc': 30,
+            'invert': False,
+            'min_input': -0.8, 'max_input': 0.8 # Calibrate based on observation
+        },
+        {
+            'source': 'head_pitch', # Face Pitch (-pi/2 to pi/2 approx)
+            'channel': 3, 'cc': 31,
+            'invert': False, # Nodding up -> higher value? Or invert if needed
+            'min_input': -0.6, 'max_input': 0.6 # Calibrate
+        },
+        {
+            'source': 'head_roll', # Face Roll (-pi/2 to pi/2 approx)
+            'channel': 3, 'cc': 32,
+            'invert': False,
+            'min_input': -0.5, 'max_input': 0.5 # Calibrate
+        },
+        {
+            'source': 'mar', # Mouth Aspect Ratio (0=closed, ~1=open)
+            'channel': 3, 'cc': 33,
+            'invert': False, # Open mouth -> higher value
+            'min_input': 0.0, 'max_input': 0.8 # Calibrate based on observation
+        },
+        {
+            'source': 'jaw_openness', # Normalized Jaw Openness
+            'channel': 3, 'cc': 34,
+            'invert': False,
+            'min_input': 0.0, 'max_input': 0.2 # Calibrate
+        },
+        # Average Eye Aspect Ratio (Blinking)
+        # Might need custom logic in mapper or pre-processing if desired
+        # Example mapping individual eyes:
+        {
+            'source': 'left_ear', # Left Eye Aspect Ratio (~0.35=open, <0.2=closed)
+            'channel': 3, 'cc': 35,
+            'invert': True, # Blink (small EAR) -> higher value?
+            'min_input': 0.15, 'max_input': 0.40 # Calibrate
+        },
+         {
+            'source': 'right_ear', # Right Eye Aspect Ratio
+            'channel': 3, 'cc': 36,
+            'invert': True,
+            'min_input': 0.15, 'max_input': 0.40 # Calibrate
+        },
+        # Eyebrow Height examples
+        {
+             'source': 'left_eyebrow_height', # Normalized height
+             'channel': 3, 'cc': 37,
+             'invert': False, # Raise eyebrow -> higher value
+             'min_input': 0.05, 'max_input': 0.25 # Calibrate
+        },
+        {
+             'source': 'right_eyebrow_height', # Normalized height
+             'channel': 3, 'cc': 38,
+             'invert': False,
+             'min_input': 0.05, 'max_input': 0.25 # Calibrate
+        },
         # --- EXAMPLE MAPPINGS FOR HAND 2 (Channel 2) ---
         # If you want to control different parameters with the second hand,
         # duplicate the desired mappings above and change 'channel' to 2.
@@ -132,6 +189,7 @@ DEFAULT_CONFIG = {
     'display': {
         'show_window': True,
         'draw_landmarks': True,
+        'draw_face_tesselation': True,
         'draw_connections': True,
         'show_fps': True,
         'flip_horizontal': True
@@ -147,104 +205,114 @@ def load_config(config_path='config.yaml', force_defaults=False):
             with open(config_path, 'r') as f: user_config = yaml.safe_load(f)
             if user_config:
                 print(f"Info: Loading configuration from {config_path}")
-                for key, value in user_config.items():
-                    if key == 'mappings' and isinstance(value, list): config[key] = value
-                    elif isinstance(value, dict) and key in config and isinstance(config[key], dict): config[key].update(value)
-                    elif key in config: config[key] = value
-                    else: config[key] = value
+                # Update existing keys recursively
+                def update_dict(target, source):
+                    for key, value in source.items():
+                        if key == 'mappings' and isinstance(value, list):
+                            target[key] = value # Replace mappings list entirely
+                        elif isinstance(value, dict) and key in target and isinstance(target[key], dict):
+                            update_dict(target[key], value)
+                        else:
+                            target[key] = value
+
+                update_dict(config, user_config)
+
         except Exception as e:
             print(f"Warning: Could not load or parse {config_path}. Using defaults. Error: {e}")
-            config = copy.deepcopy(DEFAULT_CONFIG)
+            config = copy.deepcopy(DEFAULT_CONFIG) # Reset to defaults on error
     elif not force_defaults and not os.path.exists(config_path):
         print("Info: config.yaml not found. Using defaults. Creating file.")
-        save_config(DEFAULT_CONFIG, config_path)
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        save_config(DEFAULT_CONFIG, config_path) # Save defaults immediately
+        # config is already default config here
     elif force_defaults:
         print("Info: Using forced default configuration.")
+        # config is already default config here
 
-    # --- Post-Load Validation ---
+
+    # --- Post-Load Validation & Default Filling ---
+    # Ensure top-level keys exist
     for key, default_value in DEFAULT_CONFIG.items():
-        if key not in config: config[key] = copy.deepcopy(default_value)
+        if key not in config:
+            config[key] = copy.deepcopy(default_value)
+        # Ensure sub-dictionaries have required keys (except mappings)
         elif isinstance(default_value, dict) and key != 'mappings':
             current_dict = config.get(key, {})
-            if not isinstance(current_dict, dict): config[key] = copy.deepcopy(default_value)
+            if not isinstance(current_dict, dict):
+                config[key] = copy.deepcopy(default_value) # Overwrite if type changed
             else:
                 for sub_key, default_sub_value in default_value.items():
-                    if sub_key not in current_dict: config[key][sub_key] = copy.deepcopy(default_sub_value)
+                    if sub_key not in current_dict:
+                        config[key][sub_key] = copy.deepcopy(default_sub_value)
 
+    # Validate mappings list separately
     if 'mappings' not in config or not isinstance(config['mappings'], list):
         config['mappings'] = copy.deepcopy(DEFAULT_CONFIG['mappings'])
 
-    # Convert numpy types
+    # Convert numpy types just in case they sneak in (e.g. from old saves)
     for mapping in config.get('mappings', []):
         if isinstance(mapping, dict):
             for map_key, map_value in mapping.items():
                 if isinstance(map_value, np.floating): mapping[map_key] = float(map_value)
                 elif isinstance(map_value, np.integer): mapping[map_key] = int(map_value)
 
+    # Ensure backward compatibility: if only 'mediapipe' confidence exists, apply to 'face_mesh'
+    mp_conf = config.get('mediapipe', {})
+    fm_conf = config.get('face_mesh', {})
+    if 'min_detection_confidence' not in fm_conf and 'min_detection_confidence' in mp_conf:
+        fm_conf['min_detection_confidence'] = mp_conf['min_detection_confidence']
+    if 'min_tracking_confidence' not in fm_conf and 'min_tracking_confidence' in mp_conf:
+        fm_conf['min_tracking_confidence'] = mp_conf['min_tracking_confidence']
+    config['face_mesh'] = fm_conf # Ensure face_mesh dict exists
+
     print("Configuration loaded.")
+    # print(yaml.dump(config, sort_keys=False)) # Debug: Print final config
     return config
 
+
+# --- save_config function ---
 def save_config(config, config_path='config.yaml'):
      """Saves the current configuration to YAML file."""
      try:
          # Add comments before saving
          comment = """# CamMIDI Configuration
 #
-# Calibration: Use the buttons in the UI ('Squeeze', 'Spread', 'Pinch Min/Max')
-# to set the 'min_input' and 'max_input' ranges for spread and pinch gestures.
-# Press 'Save Config' in the UI to make these changes permanent in this file.
+# Calibration: Use UI buttons for Hand Pinch/Spread min/max ranges.
+# Manually edit face metric ranges (head_*, ear, mar, etc.) based on observed values.
+# Press 'Save Config' in the UI to save changes to this file.
 #
-# Centroid X/Y: The usable input range is automatically inset from the screen edges
-# by 12.5% on each side (configurable inset in mapper.py if needed). The 'min_input'
-# and 'max_input' fields for 'centroid_x'/'centroid_y' in this file are ignored.
-#
-# For sources using distances ('curl', 'pinch', 'wrist_z'):
-# - These are sensitive to hand size and camera distance.
-# - Values are often normalized relative to hand size (e.g., wrist-to-middle-MCP distance).
-# - **You MUST calibrate 'min_input' and 'max_input' for your setup!**
-#   (Use UI buttons for pinch/spread, manually edit for curl/z based on console/display values).
-# - 'invert: True' is common for curls/pinches (small distance = high MIDI value).
-#
-# For sources using angles ('pitch', 'yaw', 'roll', 'spread'):
-# - Values are typically in radians. Pi = 3.14159..., Pi/2 = 1.5708...
-# - Ranges like -pi/2 to +pi/2 (-90 to +90 deg) or 0 to pi/4 (0 to 45 deg) are common starting points.
-# - Pitch/Yaw/Roll default range uses min_input=-pi/2, max_input=+pi/2.
-# - Calibrate 'min_input' / 'max_input' based on your comfortable range of motion (use UI for spread).
+# See DEFAULT_CONFIG in config_loader.py for all possible parameters.
+# Hand metrics ('centroid_*', 'hand_*', '*_curl', '*_spread', '*_pinch')
+# Face metrics ('head_*', '*_ear', 'mar', 'jaw_openness', '*_eyebrow_height')
 #
 # MIDI:
 # - port_name: Your virtual MIDI port.
 # - smoothing_factor: 0.0 (none) to 0.99 (max). Default: 0.6
-# - force_channel1_hand: Assigns Channel 1 based on handedness if two hands are present.
-#   Options: "None" (default, first detected hand is Ch1),
-#            "Left" (detected Left hand is Ch1, Right/Unknown is Ch2),
-#            "Right" (detected Right hand is Ch1, Left/Unknown is Ch2).
-#   A single detected hand always uses Channel 1 regardless of this setting.
+# - force_channel1_hand: Assigns Hand Ch1 based on handedness if two hands present.
 #
 # Mappings:
-# - Processed PER HAND based on channel assignment logic (see force_channel1_hand).
-# - channel: 1 -> Hand assigned to Channel 1
-# - channel: 2 -> Hand assigned to Channel 2
-# - Implicit Channel 2 Mapping:
-#   If 'max_num_hands' > 1, any mapping for 'channel: 1'
-#   will be IMPLICITLY duplicated for 'channel: 2' using the second hand's data
-#   with the SAME CC number, UNLESS a mapping explicitly defines 'channel: 2'
-#   for the SAME 'source'. Explicit mappings always override implicit ones
-#   for a given source/channel/cc combination.
-# - Add 'comment' field for notes (optional).
+# - Define 'source' (metric name), 'channel', 'cc', 'invert' (optional),
+#   'min_input'/'max_input' (REQUIRED for non-centroid sources).
+# - Hand mappings can use implicit Channel 2 logic (see docs/mapper.py).
+# - Face mappings typically use a dedicated channel (e.g., 3) or reuse 1/2.
 #
 """
          # Convert numpy types to standard Python types for YAML saving
          config_to_save = copy.deepcopy(config)
+         # Convert numpy types in mappings
          if 'mappings' in config_to_save and isinstance(config_to_save['mappings'], list):
              for mapping in config_to_save['mappings']:
                  if isinstance(mapping, dict):
-                     for key, value in mapping.items():
-                         if isinstance(value, np.integer):
-                             mapping[key] = int(value)
-                         elif isinstance(value, np.floating):
-                             mapping[key] = float(value)
-
+                    for key, value in mapping.items():
+                        if isinstance(value, np.integer): mapping[key] = int(value)
+                        elif isinstance(value, np.floating):
+                            if np.isinf(value) or np.isnan(value):
+                                print(f"Warning: Invalid value ({value}) found for '{key}' in mapping '{mapping.get('source', 'Unknown')}'. Replacing with 0.")
+                                mapping[key] = 0.0
+                            else:
+                                mapping[key] = float(value)
+                        elif isinstance(value, float) and (np.isinf(value) or np.isnan(value)):
+                            print(f"Warning: Invalid float value ({value}) found for '{key}' in mapping '{mapping.get('source', 'Unknown')}'. Replacing with 0.")
+                            mapping[key] = 0.0
          with open(config_path, 'w') as f:
              f.write(comment)
              yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False)
@@ -255,31 +323,27 @@ def save_config(config, config_path='config.yaml'):
 
 if __name__ == '__main__':
     # Example usage: Load and print config
-    # Test default loading
     print("--- Loading Default Config (Simulated) ---")
     cfg_default = load_config(force_defaults=True)
     print(yaml.dump(cfg_default, sort_keys=False))
 
-    # Test loading from file (if exists)
     print("\n--- Loading Config (from file if exists, else default) ---")
-    # Ensure a dummy file doesn't exist for this test or rename it
     dummy_path = 'test_config_load.yaml'
     if os.path.exists(dummy_path): os.remove(dummy_path)
-    cfg_normal = load_config(config_path=dummy_path) # Will create file with defaults
-    # print(yaml.dump(cfg_normal, sort_keys=False))
+    cfg_normal = load_config(config_path=dummy_path)
+    # print(yaml.dump(cfg_normal, sort_keys=False)) # Print loaded/created config
 
-    # Example of accessing a value
-    print(f"\nSmoothing Factor (Normal Load): {cfg_normal.get('midi', {}).get('smoothing_factor')}")
-    print(f"Max Num Hands (Normal Load): {cfg_normal.get('mediapipe', {}).get('max_num_hands')}")
-    print(f"Force Channel 1 Hand (Normal Load): {cfg_normal.get('midi', {}).get('force_channel1_hand')}")
+    # Example of accessing new values
+    print(f"\nFace Max Num Faces: {cfg_normal.get('face_mesh', {}).get('max_num_faces')}")
+    print(f"Hand Max Num Hands: {cfg_normal.get('mediapipe', {}).get('max_num_hands')}")
 
     # Test saving after modification
-    if 'midi' in cfg_normal:
-        cfg_normal['midi']['force_channel1_hand'] = "Left"
-        cfg_normal['mappings'].append({'source': 'test', 'channel': 1, 'cc': 99})
+    if 'face_mesh' in cfg_normal:
+        cfg_normal['face_mesh']['max_num_faces'] = 2 # Example change
+        cfg_normal['mappings'].append({'source': 'face_test', 'channel': 3, 'cc': 99, 'min_input':0, 'max_input':1})
         save_config(cfg_normal, dummy_path)
         print(f"\n--- Loading Config ({dummy_path} after modification) ---")
         cfg_reloaded = load_config(config_path=dummy_path)
-        print(f"Force Channel 1 Hand (Reloaded): {cfg_reloaded.get('midi', {}).get('force_channel1_hand')}")
-        # print(yaml.dump(cfg_reloaded, sort_keys=False))
-        if os.path.exists(dummy_path): os.remove(dummy_path) # Clean up test file
+        print(f"Face Max Num Faces (Reloaded): {cfg_reloaded.get('face_mesh', {}).get('max_num_faces')}")
+        # Clean up test file
+        if os.path.exists(dummy_path): os.remove(dummy_path)

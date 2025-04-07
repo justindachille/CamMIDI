@@ -8,7 +8,8 @@ import warnings
 
 # Import config_loader functions directly
 from config_loader import load_config, save_config
-from tracker import HandTracker
+from hand_tracker import HandTracker
+from face_tracker import FaceTracker
 from mapper import MidiMapper
 from midi_sender import MidiSender
 
@@ -19,7 +20,17 @@ calibration_action = None # Stores the key of the button clicked
 window_name = "CamMIDI Output"
 last_calibrated_message = ""
 message_display_time = 0
+last_action_key_clicked = None
+last_action_time = 0
 
+is_auto_calibrating = False
+auto_calib_ranges = {} # Stores {'source_name': {'min': val, 'max': val}}
+calibration_epsilon = 0.01 # To prevent min == max
+
+# --- GUI Functions (draw_text_outlined, define_buttons, draw_buttons, mouse_callback) ---
+# These remain largely the same, define_buttons might need slight adjustment
+# if adding face calibration buttons later, but not requested now.
+# (Keep the existing functions as they were in the original main.py)
 def draw_text_outlined(img, text, pos, font, scale, fg_color, bg_color, fg_thickness, bg_thickness_add=2):
     """Draws text with a background outline."""
     x, y = pos
@@ -28,178 +39,119 @@ def draw_text_outlined(img, text, pos, font, scale, fg_color, bg_color, fg_thick
 
 def define_buttons(frame_width, frame_height):
     """Defines button locations and text based on frame size."""
-    global buttons
+    global buttons, is_auto_calibrating # Need is_auto_calibrating to set button text
     buttons.clear() # Clear previous definitions
 
-    button_h = 28 # Slightly smaller height
-    button_w = 145 # Slightly wider
+    button_h = 28
+    button_w = 145
     spacing = 4
-    bottom_margin = spacing + 5 # Space from bottom edge
+    bottom_margin = spacing + 5
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.45 # Slightly smaller font
+    font_scale = 0.45
     fg_color = (255, 255, 255)
     bg_color = (100, 100, 100)
-    hover_color = (130, 130, 130) # Color when hovered
-    action_color = (160, 160, 160) # Color briefly when clicked
+    hover_color = (130, 130, 130)
+    action_color = (160, 160, 160)
 
-    # --- ROW 1: Pinches (Index, Middle) ---
-    row1_y = frame_height - bottom_margin - 2 * button_h - spacing # Top row of buttons
-    start_x = spacing
-
-    # T-Index
-    buttons['calib_ti_pinch_min'] = {
-        'rect': (start_x, row1_y, button_w, button_h),
-        'text': 'Set T-Idx MIN', 'action': 'calib_ti_pinch_min', 'help': 'Click when Thumb & Index tips are CLOSEST',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-    start_x += button_w + spacing
-    buttons['calib_ti_pinch_max'] = {
-        'rect': (start_x, row1_y, button_w, button_h),
-        'text': 'Set T-Idx MAX', 'action': 'calib_ti_pinch_max', 'help': 'Click when Thumb & Index tips are FARTHEST apart',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-    start_x += button_w + spacing + 10 # Gap
-
-    # T-Middle
-    buttons['calib_tm_pinch_min'] = {
-        'rect': (start_x, row1_y, button_w, button_h),
-        'text': 'Set T-Mid MIN', 'action': 'calib_tm_pinch_min', 'help': 'Click when Thumb & Middle tips are CLOSEST',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-    start_x += button_w + spacing
-    buttons['calib_tm_pinch_max'] = {
-        'rect': (start_x, row1_y, button_w, button_h),
-        'text': 'Set T-Mid MAX', 'action': 'calib_tm_pinch_max', 'help': 'Click when Thumb & Middle tips are FARTHEST apart',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-
-    # --- ROW 2: Pinches (Ring, Pinky) ---
-    row2_y = frame_height - bottom_margin - button_h # Middle row
-    start_x = spacing
-
-    # T-Ring
-    buttons['calib_tr_pinch_min'] = {
-        'rect': (start_x, row2_y, button_w, button_h),
-        'text': 'Set T-Ring MIN', 'action': 'calib_tr_pinch_min', 'help': 'Click when Thumb & Ring tips are CLOSEST',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-    start_x += button_w + spacing
-    buttons['calib_tr_pinch_max'] = {
-        'rect': (start_x, row2_y, button_w, button_h),
-        'text': 'Set T-Ring MAX', 'action': 'calib_tr_pinch_max', 'help': 'Click when Thumb & Ring tips are FARTHEST apart',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-    start_x += button_w + spacing + 10 # Gap
-
-    # T-Pinky
-    buttons['calib_tp_pinch_min'] = {
-        'rect': (start_x, row2_y, button_w, button_h),
-        'text': 'Set T-Pink MIN', 'action': 'calib_tp_pinch_min', 'help': 'Click when Thumb & Pinky tips are CLOSEST',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-    start_x += button_w + spacing
-    buttons['calib_tp_pinch_max'] = {
-        'rect': (start_x, row2_y, button_w, button_h),
-        'text': 'Set T-Pink MAX', 'action': 'calib_tp_pinch_max', 'help': 'Click when Thumb & Pinky tips are FARTHEST apart',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
-
-    # --- ROW 3: Spread & Save ---
-    # Let's place Spread on the left of row 3, Save on the right
-    row3_y = frame_height - bottom_margin # Bottom row - but we need space for help text maybe put row 1/2 lower
-    row2_y = frame_height - bottom_margin - button_h
-    row1_y = frame_height - bottom_margin - 2*button_h - spacing
-
-    # Recalculate Y for rows 1 and 2 to make space below row 2
-    row3_y = frame_height - bottom_margin - button_h # New bottom row Y
+    # Calculate Y positions to allow space for help text below
+    help_text_height_allowance = 20 # Space for one line of help text
+    row4_y = frame_height - bottom_margin - button_h # New row for Auto-Calibrate
+    row3_y = row4_y - button_h - spacing
     row2_y = row3_y - button_h - spacing
     row1_y = row2_y - button_h - spacing
-    help_text_y = frame_height - bottom_margin + 2 # Y position for help text
+    help_text_y = frame_height - bottom_margin + 2 # Y position below last row
 
-    # Redefine buttons with corrected Y
-    # Row 1
-    buttons['calib_ti_pinch_min']['rect'] = (buttons['calib_ti_pinch_min']['rect'][0], row1_y, button_w, button_h)
-    buttons['calib_ti_pinch_max']['rect'] = (buttons['calib_ti_pinch_max']['rect'][0], row1_y, button_w, button_h)
-    buttons['calib_tm_pinch_min']['rect'] = (buttons['calib_tm_pinch_min']['rect'][0], row1_y, button_w, button_h)
-    buttons['calib_tm_pinch_max']['rect'] = (buttons['calib_tm_pinch_max']['rect'][0], row1_y, button_w, button_h)
-    # Row 2
-    buttons['calib_tr_pinch_min']['rect'] = (buttons['calib_tr_pinch_min']['rect'][0], row2_y, button_w, button_h)
-    buttons['calib_tr_pinch_max']['rect'] = (buttons['calib_tr_pinch_max']['rect'][0], row2_y, button_w, button_h)
-    buttons['calib_tp_pinch_min']['rect'] = (buttons['calib_tp_pinch_min']['rect'][0], row2_y, button_w, button_h)
-    buttons['calib_tp_pinch_max']['rect'] = (buttons['calib_tp_pinch_max']['rect'][0], row2_y, button_w, button_h)
-
-    # Row 3 - Spread
+    # --- ROW 1: Pinches (Index, Middle) --- (Keep as is)
     start_x = spacing
-    buttons['calib_spread_min'] = {
-        'rect': (start_x, row3_y, button_w, button_h),
-        'text': 'Set Spread MIN', 'action': 'calib_spread_min', 'help': 'Click when fingers are SQUEEZED together',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
+    buttons['calib_ti_pinch_min'] = {'rect': (start_x, row1_y, button_w, button_h), 'text': 'Set T-Idx MIN', 'action': 'calib_ti_pinch_min', 'help': 'Click when Thumb & Index tips are CLOSEST', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
     start_x += button_w + spacing
-    buttons['calib_spread_max'] = {
-        'rect': (start_x, row3_y, button_w, button_h),
-        'text': 'Set Spread MAX', 'action': 'calib_spread_max', 'help': 'Click when fingers are SPREAD APART maximally',
-        'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color
-    }
+    buttons['calib_ti_pinch_max'] = {'rect': (start_x, row1_y, button_w, button_h), 'text': 'Set T-Idx MAX', 'action': 'calib_ti_pinch_max', 'help': 'Click when Thumb & Index tips are FARTHEST apart', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+    start_x += button_w + spacing + 10 # Gap
+    buttons['calib_tm_pinch_min'] = {'rect': (start_x, row1_y, button_w, button_h), 'text': 'Set T-Mid MIN', 'action': 'calib_tm_pinch_min', 'help': 'Click when Thumb & Middle tips are CLOSEST', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+    start_x += button_w + spacing
+    buttons['calib_tm_pinch_max'] = {'rect': (start_x, row1_y, button_w, button_h), 'text': 'Set T-Mid MAX', 'action': 'calib_tm_pinch_max', 'help': 'Click when Thumb & Middle tips are FARTHEST apart', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
 
-    # Row 3 - Save (Far Right)
-    save_w = 100 # Smaller width for save
+    # --- ROW 2: Pinches (Ring, Pinky) --- (Keep as is)
+    start_x = spacing
+    buttons['calib_tr_pinch_min'] = {'rect': (start_x, row2_y, button_w, button_h), 'text': 'Set T-Ring MIN', 'action': 'calib_tr_pinch_min', 'help': 'Click when Thumb & Ring tips are CLOSEST', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+    start_x += button_w + spacing
+    buttons['calib_tr_pinch_max'] = {'rect': (start_x, row2_y, button_w, button_h), 'text': 'Set T-Ring MAX', 'action': 'calib_tr_pinch_max', 'help': 'Click when Thumb & Ring tips are FARTHEST apart', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+    start_x += button_w + spacing + 10 # Gap
+    buttons['calib_tp_pinch_min'] = {'rect': (start_x, row2_y, button_w, button_h), 'text': 'Set T-Pink MIN', 'action': 'calib_tp_pinch_min', 'help': 'Click when Thumb & Pinky tips are CLOSEST', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+    start_x += button_w + spacing
+    buttons['calib_tp_pinch_max'] = {'rect': (start_x, row2_y, button_w, button_h), 'text': 'Set T-Pink MAX', 'action': 'calib_tp_pinch_max', 'help': 'Click when Thumb & Pinky tips are FARTHEST apart', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+
+    # --- ROW 3: Spread --- (Keep as is)
+    start_x = spacing
+    buttons['calib_spread_min'] = {'rect': (start_x, row3_y, button_w, button_h), 'text': 'Set Spread MIN', 'action': 'calib_spread_min', 'help': 'Click when fingers are SQUEEZED together', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+    start_x += button_w + spacing
+    buttons['calib_spread_max'] = {'rect': (start_x, row3_y, button_w, button_h), 'text': 'Set Spread MAX', 'action': 'calib_spread_max', 'help': 'Click when fingers are SPREAD APART maximally', 'font': font, 'scale': font_scale, 'fg': fg_color, 'bg': bg_color, 'hover': hover_color, 'action_c': action_color}
+
+    # --- ROW 4: Auto-Calibrate & Save ---
+    start_x = spacing
+    # Dynamic text/color for Auto-Calibrate button
+    auto_calib_text = "Stop Calibrating" if is_auto_calibrating else "Auto-Calibrate ALL"
+    auto_calib_fg = (255, 150, 0) if is_auto_calibrating else (0, 200, 255)
+    auto_calib_bg = (80, 40, 0) if is_auto_calibrating else (0, 60, 80)
+    auto_calib_hover = (100, 60, 0) if is_auto_calibrating else (0, 80, 100)
+    auto_calib_action_c = (120, 80, 0) if is_auto_calibrating else (0, 100, 120)
+    auto_calib_help = "Click to STOP auto range detection" if is_auto_calibrating else "Click to START auto detecting min/max for ALL controls"
+    auto_button_w = button_w * 2 + spacing # Make it wider
+    buttons['toggle_auto_calibrate'] = {'rect': (start_x, row4_y, auto_button_w, button_h), 'text': auto_calib_text, 'action': 'toggle_auto_calibrate', 'help': auto_calib_help, 'font': font, 'scale': font_scale, 'fg': auto_calib_fg, 'bg': auto_calib_bg, 'hover': auto_calib_hover, 'action_c': auto_calib_action_c}
+
+    # Save Button (Far Right)
+    save_w = 100
     save_x = frame_width - save_w - spacing
-    buttons['save_config'] = {
-        'rect': (save_x, row3_y, save_w, button_h),
-        'text': 'Save Config', 'action': 'save_config', 'help': 'Save current calibrated min/max values to config.yaml',
-        'font': font, 'scale': font_scale, 'fg': (0, 255, 0), 'bg': (0, 80, 0), 'hover': (0, 120, 0), 'action_c': (0,160,0)
-    }
+    buttons['save_config'] = {'rect': (save_x, row4_y, save_w, button_h), 'text': 'Save Config', 'action': 'save_config', 'help': 'Save current calibrated values to config.yaml', 'font': font, 'scale': font_scale, 'fg': (0, 255, 0), 'bg': (0, 80, 0), 'hover': (0, 120, 0), 'action_c': (0,160,0)}
 
     # Store help text position
     buttons['help_text_pos'] = (spacing, help_text_y)
 
-
-def draw_buttons(frame):
-    """Draws all defined buttons and hover help text on the frame."""
-    global hovered_button_key
+def draw_buttons(frame, highlight_duration=0.2):
+    """Draws buttons, handling hover and brief click highlight."""
+    global hovered_button_key, last_action_key_clicked, last_action_time
     active_help_text = None
+    current_time = time.time()
+
+    # Check if the action highlight duration has passed
+    show_action_highlight = (last_action_key_clicked is not None and
+                             (current_time - last_action_time <= highlight_duration))
 
     for key, btn in buttons.items():
-        if 'rect' not in btn: continue # Skip help_text_pos entry
+        if 'rect' not in btn: continue
 
         x, y, w, h = btn['rect']
-        bg = btn['bg']
-        # Check if this button is hovered
-        is_hovered = (key == hovered_button_key)
-        if is_hovered:
+        bg = btn['bg'] # Default background
+
+        # Prioritize Action Highlight -> Hover -> Default
+        if show_action_highlight and key == last_action_key_clicked:
+            bg = btn['action_c']
+        elif key == hovered_button_key:
             bg = btn['hover']
-            active_help_text = btn.get('help') # Get help text if hovered
+            active_help_text = btn.get('help')
 
-        # Briefly change color if it was the last action clicked
-        if key == calibration_action: # Use the global action flag
-             bg = btn['action_c']
-
-        # Draw background rectangle
+        # Draw background and border
         cv2.rectangle(frame, (x, y), (x + w, y + h), bg, -1)
-        # Draw border
         cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 255), 1)
 
-        # Calculate text position for centering
+        # Calculate text position and draw
         text_size = cv2.getTextSize(btn['text'], btn['font'], btn['scale'], 1)[0]
         text_x = x + (w - text_size[0]) // 2
         text_y = y + (h + text_size[1]) // 2
-
-        # Draw text
         cv2.putText(frame, btn['text'], (text_x, text_y), btn['font'], btn['scale'], btn['fg'], 1, cv2.LINE_AA)
 
-    # Draw the active help text (if any)
+    # Draw the active help text (only if not showing action highlight, or allow both?)
+    # Let's allow both for now.
     if active_help_text and 'help_text_pos' in buttons:
         help_x, help_y = buttons['help_text_pos']
         draw_text_outlined(frame, f"Info: {active_help_text}", (help_x, help_y),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), (0,0,0), 1)
 
-
 def mouse_callback(event, x, y, flags, param):
     """Handles mouse events (clicks and movement for hover)."""
-    global calibration_action, hovered_button_key
-    
-    # Update hover state on movement
+    global calibration_action, hovered_button_key, last_action_key_clicked, last_action_time
+    global is_auto_calibrating # Need to potentially modify this directly
+
     if event == cv2.EVENT_MOUSEMOVE:
         new_hover_key = None
         for key, btn in buttons.items():
@@ -208,64 +160,74 @@ def mouse_callback(event, x, y, flags, param):
             if bx <= x <= bx + bw and by <= y <= by + bh:
                 new_hover_key = key
                 break
-        # Only update if hover state changed to reduce redraw flicker potentially
+        # Update global hover state only if it changed
         if new_hover_key != hovered_button_key:
             hovered_button_key = new_hover_key
 
-    # Handle clicks
     elif event == cv2.EVENT_LBUTTONDOWN:
-        # Reset hover state on click start (optional)
-        # hovered_button_key = None
-        clicked_on_button = False
+        clicked_button_key = None
         for key, btn in buttons.items():
             if 'rect' not in btn: continue
             bx, by, bw, bh = btn['rect']
             if bx <= x <= bx + bw and by <= y <= by + bh:
-                calibration_action = btn['action'] # Set the action flag
-                print(f"Button '{btn['text']}' clicked. Action: {calibration_action}")
-                clicked_on_button = True
-                break
-        # If click was not on a button, clear the action (prevents accidental repeats)
-        # if not clicked_on_button:
-        #      calibration_action = None # Maybe not needed if action is reset in main loop
+                # --- Special handling for Auto-Calibrate Toggle ---
+                if btn['action'] == 'toggle_auto_calibrate':
+                    is_auto_calibrating = not is_auto_calibrating # Toggle the state directly
+                    calibration_action = btn['action'] # Still set action for main loop logic
+                else:
+                    # Set the action for other buttons
+                    calibration_action = btn['action']
 
-def update_config_value(config, source_name, param_name, value, hand_index=0):
-    """Updates min_input or max_input for a specific source in the config, ensuring min < max."""
+                # Record WHICH button was clicked and WHEN for drawing highlight
+                last_action_key_clicked = key
+                last_action_time = time.time()
+                hovered_button_key = None # Reset hover state
+                print(f"Button '{btn['text']}' clicked. Action pending: {calibration_action}")
+                clicked_button_key = key
+                break
+        # If click was outside any button, clear pending action and highlight trigger
+        if clicked_button_key is None:
+            calibration_action = None
+            last_action_key_clicked = None
+
+
+# --- update_config_value (Only for Hand Calibration Now) ---
+def update_config_value(config, source_name, param_name, value):
+    """Updates min_input or max_input for a specific HAND source in the config."""
     global last_calibrated_message, message_display_time
     found_mapping = False
     updated = False # Flag to check if update actually happened
 
     for mapping in config.get('mappings', []):
         if isinstance(mapping, dict) and mapping.get('source') == source_name:
+            # Basic check to avoid applying to face sources accidentally
+            is_potential_face_source = source_name.startswith('head_') or source_name.endswith('_ear') or source_name == 'mar' or source_name == 'jaw_openness' or 'eyebrow' in source_name
+            if is_potential_face_source:
+                print(f"Info: Calibration button pressed, but source '{source_name}' looks like a face metric. Skipping UI calibration.")
+                continue # Skip face sources for button calibration
+
             found_mapping = True
             current_val = mapping.get(param_name)
 
-            # --- Check for min/max inversion and auto-correct ---
+            # Check for min/max inversion and auto-correct
             other_param = 'max_input' if param_name == 'min_input' else 'min_input'
-            other_val = mapping.get(other_param) # Get the *other* boundary
+            other_val = mapping.get(other_param)
 
-            corrected_value = value
-            swap_occurred = False
-
+            adjustment_info = ""
             if param_name == 'min_input':
-                # Setting MIN: if new min >= current max, set max to be slightly larger than new min
                 if other_val is not None and value >= other_val:
-                    mapping['max_input'] = value + 0.01 # Ensure max is always > min
-                    print(f"Warning: New min ({value:.4f}) >= current max ({other_val:.4f}). Auto-adjusting max.")
-                    swap_occurred = True # Technically an adjustment, not a swap
-                mapping[param_name] = value # Set the new min
+                    mapping['max_input'] = value + 0.01
+                    adjustment_info = f" (Adjusted max to {mapping['max_input']:.3f})"
+                mapping[param_name] = value
                 updated = True
 
             elif param_name == 'max_input':
-                # Setting MAX: if new max <= current min, set min to be slightly smaller than new max
                 if other_val is not None and value <= other_val:
-                    mapping['min_input'] = value - 0.01 if value > 0 else 0.0 # Ensure min is always < max (and non-negative)
-                    print(f"Warning: New max ({value:.4f}) <= current min ({other_val:.4f}). Auto-adjusting min.")
-                    swap_occurred = True # Adjustment
-                mapping[param_name] = value # Set the new max
+                    mapping['min_input'] = value - 0.01 if value > 0.01 else 0.0
+                    adjustment_info = f" (Adjusted min to {mapping['min_input']:.3f})"
+                mapping[param_name] = value
                 updated = True
 
-            # --- Format Message ---
             if updated:
                 final_min = mapping.get('min_input', 'N/A')
                 final_max = mapping.get('max_input', 'N/A')
@@ -274,51 +236,161 @@ def update_config_value(config, source_name, param_name, value, hand_index=0):
                 try: final_max_f = f"{final_max:.3f}"
                 except: final_max_f = str(final_max)
 
-                msg = f"Calibrated {source_name}: Range [{final_min_f}, {final_max_f}]"
-                if swap_occurred: msg += " (Adjusted)"
+                msg = f"Calibrated {source_name}: Range [{final_min_f}, {final_max_f}]{adjustment_info}"
                 print(msg)
                 last_calibrated_message = msg
                 message_display_time = time.time()
 
-            break # Assume only one mapping per source
+            break # Assume only one mapping per source for calibration buttons
 
-    if not found_mapping:
-        msg = f"Warning: No mapping found for source '{source_name}'. Cannot calibrate."
+    if not found_mapping and not is_potential_face_source: # Avoid warning for skipped face sources
+        msg = f"Warning: No mapping found for source '{source_name}'. Cannot calibrate via UI."
         print(msg)
         last_calibrated_message = msg
         message_display_time = time.time()
 
-    # Return flag indicating if an update was made to trigger mapper refresh
     return updated
 
-# --- Main Function ---
+def apply_auto_calibration_to_config(config, calib_ranges):
+    """Applies the observed min/max ranges to the config mappings."""
+    global last_calibrated_message, message_display_time
+    config_changed = False
+    print("\n--- Applying Auto-Calibration Results ---")
+    if not calib_ranges:
+        print("No calibration data collected.")
+        return False
+
+    num_updated = 0
+    for source_name, ranges in calib_ranges.items():
+        min_val = ranges.get('min')
+        max_val = ranges.get('max')
+
+        if min_val is None or max_val is None:
+            print(f" - Skipping {source_name}: Incomplete range data.")
+            continue
+
+        # Ensure min <= max, add epsilon if they are equal
+        if min_val > max_val:
+             min_val, max_val = max_val, min_val # Swap them
+             print(f" - Info {source_name}: Min > Max observed, swapping.")
+        if abs(min_val - max_val) < 1e-6: # Use float comparison
+            max_val += calibration_epsilon
+            print(f" - Info {source_name}: Min == Max observed, adding epsilon to max.")
+
+        found_mapping = False
+        for mapping in config.get('mappings', []):
+            if isinstance(mapping, dict) and mapping.get('source') == source_name:
+                # Update only if different (prevent unnecessary saves)
+                current_min = mapping.get('min_input')
+                current_max = mapping.get('max_input')
+                if not np.isclose(current_min, min_val, atol=1e-5) or \
+                   not np.isclose(current_max, max_val, atol=1e-5):
+                    mapping['min_input'] = float(min_val) # Ensure float type
+                    mapping['max_input'] = float(max_val) # Ensure float type
+                    print(f" - Updated {source_name}: min={min_val:.3f}, max={max_val:.3f}")
+                    config_changed = True
+                    num_updated += 1
+                else:
+                    # print(f" - No change for {source_name}: [{current_min:.3f}, {current_max:.3f}]") # Verbose
+                    pass
+                found_mapping = True
+                # Don't break, update all mappings using this source if duplicated (though unlikely)
+
+        # if not found_mapping: # Less critical warning
+        #     print(f" - Warning: Source '{source_name}' from calibration not found in current mappings.")
+
+    if config_changed:
+        msg = f"Auto-calibration applied. Updated {num_updated} source range(s). Ready to save."
+        print(msg)
+        last_calibrated_message = msg
+        message_display_time = time.time()
+    else:
+        msg = "Auto-calibration finished. No changes detected from previous config."
+        print(msg)
+        last_calibrated_message = msg
+        message_display_time = time.time()
+
+
+    print("----------------------------------------")
+    return config_changed
+
+
+# --- NEW update_auto_calibration_ranges ---
+def update_auto_calibration_ranges(config, all_hands_data, face_data):
+    """Updates the min/max ranges while auto-calibration is active."""
+    global auto_calib_ranges
+
+    # Use first detected hand's data for hand metrics (simplifies logic)
+    first_hand_data = next((hd for hd in all_hands_data if hd.get('found')), None)
+
+    # Combine sources for iteration
+    data_sources = []
+    if first_hand_data: data_sources.append(first_hand_data)
+    if face_data and face_data.get('found'): data_sources.append(face_data)
+
+    # Define sources to skip auto-calibration (usually fixed ranges)
+    skip_sources = {'centroid_x', 'centroid_y'}
+
+    # Iterate through all mappings to know *which* sources to track
+    for mapping in config.get('mappings', []):
+        if not isinstance(mapping, dict): continue
+        source_name = mapping.get('source')
+        if not source_name or source_name in skip_sources: continue
+
+        # Find the raw value for this source name from available data
+        raw_value = None
+        if first_hand_data and source_name in first_hand_data:
+            raw_value = first_hand_data.get(source_name)
+        elif face_data and source_name in face_data:
+            raw_value = face_data.get(source_name)
+
+        # If we got a valid value, update ranges
+        if raw_value is not None:
+            try:
+                current_val = float(raw_value) # Ensure numeric
+
+                if source_name not in auto_calib_ranges:
+                    # First time seeing this source in this calibration run
+                    auto_calib_ranges[source_name] = {'min': current_val, 'max': current_val}
+                else:
+                    # Update existing min/max
+                    if current_val < auto_calib_ranges[source_name]['min']:
+                        auto_calib_ranges[source_name]['min'] = current_val
+                    if current_val > auto_calib_ranges[source_name]['max']:
+                        auto_calib_ranges[source_name]['max'] = current_val
+            except (ValueError, TypeError):
+                 # print(f"Warning: Non-numeric value for {source_name}: {raw_value}. Skipping.")
+                 pass # Ignore non-numeric values
+            
 def main():
     global calibration_action, last_calibrated_message, message_display_time
+    global last_action_key_clicked, last_action_time
+    global is_auto_calibrating, auto_calib_ranges # Use globals
 
-    # --- Argument Parsing ---
-    parser = argparse.ArgumentParser(description="CamMIDI: Control MIDI with Hand Tracking.")
-    parser.add_argument('--use-defaults', action='store_true', help="Force use of default configuration, ignore config.yaml file.")
+    parser = argparse.ArgumentParser(description="CamMIDI: Control MIDI with Hand and Face Tracking.")
+    parser.add_argument('--use-defaults', action='store_true', help="Force use of default configuration.")
     parser.add_argument('--config', type=str, default='config.yaml', help="Path to the configuration file.")
     args = parser.parse_args()
     config_path = args.config
 
     # --- Initialization ---
     config = load_config(config_path=config_path, force_defaults=args.use_defaults)
-    if args.use_defaults: print("Info: --use-defaults flag detected. Ignoring config.yaml.")
 
-    tracker = HandTracker(config)
-    mapper = MidiMapper(config) # Mapper reads force_channel1_hand config now
+    hand_tracker = HandTracker(config)
+    face_tracker = FaceTracker(config) # Initialize Face Tracker
+    mapper = MidiMapper(config)
     midi_sender = MidiSender(config)
 
     # --- Camera Setup ---
     cam_idx = config.get('camera', {}).get('index', 0)
-    req_w = config.get('camera', {}).get('width', 800) # Use config defaults
+    req_w = config.get('camera', {}).get('width', 800)
     req_h = config.get('camera', {}).get('height', 460)
     cap = cv2.VideoCapture(cam_idx)
     if not cap.isOpened():
         print(f"Error: Could not open camera index {cam_idx}.")
         if midi_sender: midi_sender.close()
-        if tracker: tracker.close()
+        if hand_tracker: hand_tracker.close()
+        if face_tracker: face_tracker.close()
         return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
@@ -329,121 +401,144 @@ def main():
     display_enabled = config.get('display', {}).get('show_window', True)
     if display_enabled:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_name, actual_width, actual_height)
         define_buttons(actual_width, actual_height) # Define buttons based on actual size
-        cv2.setMouseCallback(window_name, mouse_callback) # Set the mouse callback
+        cv2.setMouseCallback(window_name, mouse_callback)
 
     pTime = 0
 
-    # --- Startup Info ---
+    # --- Startup Info --- (Keep as is)
     print("\nStarting CamMIDI loop. Press 'Q' in the output window to quit.")
-    print("Use UI buttons to calibrate Pinch/Spread min/max values.")
-    print("Press 'Save Config' button in UI to save calibrated values.")
-    print("Ensure your DAW is configured to receive MIDI from:", config.get('midi', {}).get('port_name', 'N/A'))
+    print("Use UI buttons OR 'Auto-Calibrate' to set min/max ranges.")
+    print("Manually edit config.yaml for fine-tuning or unsupported metrics.")
+    print("Press 'Save Config' button or 's' key to save calibrated values.")
+    print("MIDI Output Port:", config.get('midi', {}).get('port_name', 'N/A'))
     max_h = config.get('mediapipe', {}).get('max_num_hands', 1)
+    max_f = config.get('face_mesh', {}).get('max_num_faces', 1)
     force_ch1 = config.get('midi', {}).get('force_channel1_hand', 'None')
-    print(f"Tracking up to {max_h} hands.")
-    print(f" Channel 1 Assignment: {force_ch1} hand preference (default: first detected)")
-    if max_h > 1:
-        print(f" Implicit Ch2 mapping: ON (uses SAME CC as Channel 1). Explicit Ch2 mappings override.")
-    print("---")
-    print("CALIBRATION NOTE: Adjust 'min_input'/'max_input' in config.yaml (or use UI buttons)!")
+    print(f"Tracking up to {max_h} hands and {max_f} face(s).")
+    print(f" Hand Channel 1 Assignment: {force_ch1} preference.")
+    if max_h > 1: print(" Implicit Hand Ch2 mapping: ON.")
     print("---")
 
     # --- Main Loop ---
     try:
         action_display_start_time = 0
-        last_action_for_draw = None # Used for button feedback visualization
+        last_action_key_for_draw = None
+
         while True:
-            # (Frame capture)
             success, frame = cap.read()
             if not success or frame is None:
                  print("Warning: Failed to capture frame.")
-                 time.sleep(0.1) # Avoid busy-looping on error
+                 time.sleep(0.1)
                  continue
 
-            # 1. Track Hands
-            # Important: process_frame might flip the frame based on config
-            processed_frame, all_hands_data = tracker.process_frame(frame)
+            # 1. Track Hands and Face
+            hand_processed_frame, all_hands_data = hand_tracker.process_frame(frame.copy())
+            face_processed_frame, face_data = face_tracker.process_frame(frame.copy())
+            processed_frame = face_processed_frame # Use face frame as base for drawing
 
-            # --- Handle Calibration Actions ---
-            if calibration_action:
+            # --- Auto-Calibration Mode Logic ---
+            if is_auto_calibrating:
+                update_auto_calibration_ranges(config, all_hands_data, face_data)
+                # Optional: Display current ranges being tracked? Could get cluttered.
+
+            # --- Handle Button Clicks / Actions ---
+            current_action = None
+            if calibration_action: # Check if mouse callback set an action
                 current_action = calibration_action
-                last_action_for_draw = current_action # Store for visual feedback
-                action_display_start_time = time.time()
+                # Don't store 'toggle_auto_calibrate' for prolonged highlight
+                if current_action != 'toggle_auto_calibrate':
+                    last_action_key_for_draw = current_action
+                    action_display_start_time = time.time()
                 calibration_action = None # Reset flag immediately
-                config_updated = False
 
-                # Find the first *detected* hand for calibration data
-                # Calibration always uses the first physically detected hand (index 0 if found)
-                first_hand_data = None
-                first_hand_index = -1
-                for idx, hd in enumerate(all_hands_data):
-                    if hd.get('found', False):
-                        first_hand_data = hd
-                        first_hand_index = idx
-                        break # Found the first one
+                config_updated_by_action = False
 
-                if first_hand_data is None:
-                    msg = "Calibration failed: No hand detected."
+                # --- Toggle Auto-Calibrate Action ---
+                if current_action == 'toggle_auto_calibrate':
+                    if is_auto_calibrating:
+                         # Currently ON, user clicked to STOP
+                         print("Stopping Auto-Calibration.")
+                         # Apply the collected ranges
+                         config_updated_by_action = apply_auto_calibration_to_config(config, auto_calib_ranges)
+                         # is_auto_calibrating was already set to False by mouse_callback
+                    else:
+                         # Currently OFF, user clicked to START
+                         print("Starting Auto-Calibration... Move through desired ranges!")
+                         auto_calib_ranges.clear() # Clear previous results
+                         last_calibrated_message = "AUTO-CALIBRATING... Move freely!"
+                         message_display_time = time.time()
+                         # is_auto_calibrating was already set to True by mouse_callback
+
+                    # Redefine buttons to update text ("Start"/"Stop")
+                    if display_enabled: define_buttons(actual_width, actual_height)
+
+                # --- Handle Manual Calibration Actions ---
+                elif not is_auto_calibrating: # Only allow manual if NOT auto-calibrating
+                    first_hand_data = next((hd for hd in all_hands_data if hd.get('found')), None)
+                    if first_hand_data is None and current_action != 'save_config':
+                        msg = "Manual Calibration failed: No hand detected."
+                        print(msg)
+                        last_calibrated_message = msg
+                        message_display_time = time.time()
+                    else:
+                        # Perform HAND Calibration based on current_action
+                        if current_action == 'calib_spread_min':
+                             config_updated_by_action |= update_config_value(config, 'index_middle_spread', 'min_input', first_hand_data.get('index_middle_spread', 0.0))
+                             config_updated_by_action |= update_config_value(config, 'middle_ring_spread', 'min_input', first_hand_data.get('middle_ring_spread', 0.0))
+                             config_updated_by_action |= update_config_value(config, 'ring_pinky_spread', 'min_input', first_hand_data.get('ring_pinky_spread', 0.0))
+                        elif current_action == 'calib_spread_max':
+                             config_updated_by_action |= update_config_value(config, 'index_middle_spread', 'max_input', first_hand_data.get('index_middle_spread', np.pi/4))
+                             config_updated_by_action |= update_config_value(config, 'middle_ring_spread', 'max_input', first_hand_data.get('middle_ring_spread', np.pi/5))
+                             config_updated_by_action |= update_config_value(config, 'ring_pinky_spread', 'max_input', first_hand_data.get('ring_pinky_spread', np.pi/5))
+                        elif current_action == 'calib_ti_pinch_min': config_updated_by_action |= update_config_value(config, 'thumb_index_pinch', 'min_input', first_hand_data.get('thumb_index_pinch', 0.01))
+                        elif current_action == 'calib_ti_pinch_max': config_updated_by_action |= update_config_value(config, 'thumb_index_pinch', 'max_input', first_hand_data.get('thumb_index_pinch', 0.3))
+                        elif current_action == 'calib_tm_pinch_min': config_updated_by_action |= update_config_value(config, 'thumb_middle_pinch', 'min_input', first_hand_data.get('thumb_middle_pinch', 0.02))
+                        elif current_action == 'calib_tm_pinch_max': config_updated_by_action |= update_config_value(config, 'thumb_middle_pinch', 'max_input', first_hand_data.get('thumb_middle_pinch', 0.35))
+                        elif current_action == 'calib_tr_pinch_min': config_updated_by_action |= update_config_value(config, 'thumb_ring_pinch', 'min_input', first_hand_data.get('thumb_ring_pinch', 0.03))
+                        elif current_action == 'calib_tr_pinch_max': config_updated_by_action |= update_config_value(config, 'thumb_ring_pinch', 'max_input', first_hand_data.get('thumb_ring_pinch', 0.4))
+                        elif current_action == 'calib_tp_pinch_min': config_updated_by_action |= update_config_value(config, 'thumb_pinky_pinch', 'min_input', first_hand_data.get('thumb_pinky_pinch', 0.05))
+                        elif current_action == 'calib_tp_pinch_max': config_updated_by_action |= update_config_value(config, 'thumb_pinky_pinch', 'max_input', first_hand_data.get('thumb_pinky_pinch', 0.45))
+                        elif current_action == 'save_config':
+                             save_config(config, config_path)
+                             last_calibrated_message = f"Configuration saved to {config_path}"
+                             message_display_time = time.time()
+                             config_updated_by_action = False # No mapper update needed for save
+                else:
+                    # User clicked a manual calibration button while auto-calibrating
+                    msg = "Please stop Auto-Calibration before manual adjustments."
                     print(msg)
                     last_calibrated_message = msg
                     message_display_time = time.time()
-                else:
-                     # --- Perform Calibration based on current_action ---
-                     # (Spread actions using first detected hand's data)
-                     if current_action == 'calib_spread_min':
-                         # Calibrate all spread sources based on the first detected hand's current state
-                         config_updated |= update_config_value(config, 'index_middle_spread', 'min_input', first_hand_data.get('index_middle_spread', 0.0))
-                         config_updated |= update_config_value(config, 'middle_ring_spread', 'min_input', first_hand_data.get('middle_ring_spread', 0.0))
-                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'min_input', first_hand_data.get('ring_pinky_spread', 0.0))
-                     elif current_action == 'calib_spread_max':
-                         config_updated |= update_config_value(config, 'index_middle_spread', 'max_input', first_hand_data.get('index_middle_spread', np.pi/4))
-                         config_updated |= update_config_value(config, 'middle_ring_spread', 'max_input', first_hand_data.get('middle_ring_spread', np.pi/5))
-                         config_updated |= update_config_value(config, 'ring_pinky_spread', 'max_input', first_hand_data.get('ring_pinky_spread', np.pi/5))
-                     # (Pinch actions - T-Idx, T-Mid, T-Ring, T-Pinky)
-                     elif current_action == 'calib_ti_pinch_min': config_updated |= update_config_value(config, 'thumb_index_pinch', 'min_input', first_hand_data.get('thumb_index_pinch', 0.01))
-                     elif current_action == 'calib_ti_pinch_max': config_updated |= update_config_value(config, 'thumb_index_pinch', 'max_input', first_hand_data.get('thumb_index_pinch', 0.3))
-                     elif current_action == 'calib_tm_pinch_min': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'min_input', first_hand_data.get('thumb_middle_pinch', 0.02))
-                     elif current_action == 'calib_tm_pinch_max': config_updated |= update_config_value(config, 'thumb_middle_pinch', 'max_input', first_hand_data.get('thumb_middle_pinch', 0.35))
-                     elif current_action == 'calib_tr_pinch_min': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'min_input', first_hand_data.get('thumb_ring_pinch', 0.03))
-                     elif current_action == 'calib_tr_pinch_max': config_updated |= update_config_value(config, 'thumb_ring_pinch', 'max_input', first_hand_data.get('thumb_ring_pinch', 0.4))
-                     elif current_action == 'calib_tp_pinch_min': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'min_input', first_hand_data.get('thumb_pinky_pinch', 0.05))
-                     elif current_action == 'calib_tp_pinch_max': config_updated |= update_config_value(config, 'thumb_pinky_pinch', 'max_input', first_hand_data.get('thumb_pinky_pinch', 0.45))
-                     # (Save action)
-                     elif current_action == 'save_config':
-                         save_config(config, config_path)
-                         last_calibrated_message = f"Configuration saved to {config_path}"
-                         message_display_time = time.time()
-                         config_updated = False # No mapper update needed for save
-
-                     # Update mapper if config values (min/max input) changed
-                     if config_updated:
-                          print("Config updated by calibration, refreshing mapper.")
-                          # Pass only the mappings list to the update method
-                          mapper.update_mappings(config.get('mappings', []))
 
 
-            # 2. Map MIDI (using potentially updated mappings)
-            # Pass the *actual* frame dimensions to the mapper for centroid calculation
-            # Returns: {(channel, cc): {'value': value, 'hand_index': index}}
-            midi_map = mapper.calculate_midi(all_hands_data, actual_width, actual_height)
+                # Update mapper if config values (min/max input) changed from ANY action
+                if config_updated_by_action:
+                    print("Config updated by action, refreshing mapper.")
+                    mapper.update_mappings(config.get('mappings', []))
+
+            # Make button highlight brief (excluding auto-calibrate button)
+            if last_action_key_for_draw and (time.time() - action_display_start_time > 0.2):
+                 last_action_key_for_draw = None
+
+            # 2. Map MIDI
+            midi_map = mapper.calculate_midi(all_hands_data, face_data, actual_width, actual_height)
 
             # 3. Send MIDI
             if midi_sender and midi_sender.port_opened:
-                 # Adapt the loop to extract the value from the data dictionary
                  for (ch, cc), data in midi_map.items():
-                      val = data['value'] # Extract value
-                      midi_sender.send_cc(ch, cc, val) # Send it
+                      val = data['value']
+                      midi_sender.send_cc(ch, cc, val)
 
             # 4. Visual Feedback
             if display_enabled:
-                display_frame = processed_frame.copy()
-                # Draw tracker visuals (landmarks, etc.) AFTER potential frame flip in tracker
-                display_frame = tracker.draw_visuals(display_frame, all_hands_data)
+                display_frame = processed_frame
+                # Draw hand visuals on top
+                display_frame = hand_tracker.draw_visuals(display_frame, all_hands_data)
+                # --- DEBUG FACE TESSELLATION CHECK ---
+                display_frame = face_tracker.draw_visuals(display_frame, face_data) # Make sure this is called AFTER hand visuals if you want face on top
 
-                # FPS
-                # ... (FPS drawing code remains the same) ...
+                # FPS calculation
                 cTime = time.time(); delta_time = cTime - pTime
                 fps = 1 / delta_time if delta_time > 0 else 0; pTime = cTime
                 if config.get('display', {}).get('show_fps', True):
@@ -451,114 +546,63 @@ def main():
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), (0,0,0), 2)
 
 
-                # --- MIDI Debug Display (Updated Logic) ---
-                messages_left = []  # Channel 2 messages (drawn on left)
-                messages_right = [] # Channel 1 messages (drawn on right)
-
-                # Build source lookup (remains the same logic as before)
-                source_lookup = {}
-                explicit_ch2_sources = mapper.explicit_ch2_sources # Get from mapper instance
-                max_h_conf = config.get('mediapipe', {}).get('max_num_hands', 1) # Get max_hands from config
-                for mapping in config.get('mappings', []):
-                    if not isinstance(mapping, dict): continue
-                    m_ch = mapping.get('channel')
-                    m_cc = mapping.get('cc')
-                    m_src = mapping.get('source')
-                    if m_ch is None or m_cc is None or m_src is None: continue
-
-                    # Store primary mapping (Ch1 or explicit Ch2)
-                    source_lookup[(m_ch, m_cc)] = (m_src, False) # (source_name, is_implicit)
-
-                    # If it's a Ch1 mapping and implicit Ch2 is possible, add potential implicit entry
-                    if m_ch == 1 and max_h_conf > 1 and m_src not in explicit_ch2_sources:
-                        # Check if an explicit Ch2 mapping ALREADY exists for the *same CC*
-                        has_explicit_conflict_cc = any(
-                            m2.get('channel') == 2 and m2.get('cc') == m_cc
-                            for m2 in config.get('mappings', []) if isinstance(m2, dict)
-                        )
-                        if not has_explicit_conflict_cc:
-                             # Add implicit mapping for Ch2, using same CC as Ch1
-                             source_lookup[(2, m_cc)] = (m_src, True) # Mark as implicit
-
-                # --- Iterate through the MIDI map generated by mapper ---
+                # --- MIDI Debug Display --- (Keep as is)
+                messages_ch1, messages_ch2, messages_ch3_plus = [], [], []
+                source_lookup = { (m['channel'], m['cc']): m['source']
+                                  for m in config.get('mappings', []) if isinstance(m, dict) and m.get('source')}
                 for (ch, cc), data in midi_map.items():
                     val = data['value']
-                    hand_index = data['hand_index'] # Get the *original detection index* of the hand
-
-                    # Get corresponding hand data and handedness for display label
-                    if 0 <= hand_index < len(all_hands_data):
-                        hand_data = all_hands_data[hand_index]
-                        detected_handedness = hand_data.get('handedness', 'Unknown')
-                        # Use H1/H2 based on the *original detection index* for the label
-                        hand_label = f"H{hand_index + 1}({detected_handedness[0]})"
-                    else:
-                        hand_label = f"H?({ch})" # Fallback if hand_index is invalid (shouldn't happen)
-
-                    # Lookup source name based on the *output channel and CC*
-                    source_info = source_lookup.get((ch, cc))
-                    source_name = f"Src?({ch},{cc})"
-                    mapping_type = ""
-                    if source_info:
-                        source_name, is_implicit = source_info
-                        if is_implicit: mapping_type = "[Impl]"
-                        elif ch == 2: mapping_type = "[Expl]" # Explicit Ch2 mapping
-
-                    # Format the text string: HandLabel[Type] Source -> Ch CC: Value
-                    text = f"{hand_label}{mapping_type} {source_name} -> Ch{ch} CC{cc}: {val}"
-
-                    # Assign to display list based on the *output MIDI channel* (ch)
-                    if ch == 1:
-                        messages_right.append(text) # Channel 1 messages go on the right
-                    elif ch == 2:
-                        messages_left.append(text) # Channel 2 messages go on the left
-
-                # Draw messages from the lists
-                # ... (drawing logic remains the same, uses messages_left/messages_right) ...
-                y_offset_left, y_offset_right = 60, 60
+                    source_type = data['source_type']
+                    source_index = data['source_index'] # 0 for face, 0 or 1 for hand
+                    source_name = source_lookup.get((ch, cc), f"Src?({ch},{cc})")
+                    label = ""
+                    if source_type == 'hand':
+                        handedness = "H?"
+                        if 0 <= source_index < len(all_hands_data): handedness = all_hands_data[source_index].get('handedness', 'H?')[0]
+                        label = f"H{source_index+1}({handedness})"
+                    elif source_type == 'face': label = "Face"
+                    text = f"{label} {source_name} -> Ch{ch} CC{cc}: {val}"
+                    if ch == 1: messages_ch1.append(text)
+                    elif ch == 2: messages_ch2.append(text)
+                    else: messages_ch3_plus.append(f"Ch{ch}: {text}")
+                y_offset_ch1, y_offset_ch2, y_offset_ch3 = 60, 60, 60 + (len(messages_ch2) * 18) + 10
                 font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
                 fg_col, bg_col = (255, 255, 255), (0, 0, 0)
                 margin = 10
-                for text in messages_left: # Draw left-aligned (Channel 2)
-                     draw_text_outlined(display_frame, text, (margin, y_offset_left), font, scale, fg_col, bg_col, thick)
-                     y_offset_left += 18
-                for text in messages_right: # Draw right-aligned (Channel 1)
-                    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-                    tx = max(0, actual_width - tw - margin) # Align to right
-                    draw_text_outlined(display_frame, text, (tx, y_offset_right), font, scale, fg_col, bg_col, thick)
-                    y_offset_right += 18
-                # --- End MIDI Debug Display ---
+                for text in messages_ch1:
+                    (tw, th), _ = cv2.getTextSize(text, font, scale, thick); tx = max(0, actual_width - tw - margin)
+                    draw_text_outlined(display_frame, text, (tx, y_offset_ch1), font, scale, fg_col, bg_col, thick); y_offset_ch1 += 18
+                for text in messages_ch2: draw_text_outlined(display_frame, text, (margin, y_offset_ch2), font, scale, fg_col, bg_col, thick); y_offset_ch2 += 18
+                if not messages_ch2: y_offset_ch3 = 60
+                for text in messages_ch3_plus: draw_text_outlined(display_frame, text, (margin, y_offset_ch3), font, scale, fg_col, bg_col, thick); y_offset_ch3 += 18
 
                 # --- Draw Buttons & Help Text ---
-                # Clear button action highlight after a short delay
-                if last_action_for_draw and (time.time() - action_display_start_time > 0.2):
-                    last_action_for_draw = None # Stop highlighting
+                # Pass highlight duration, allows brief flash on click
+                draw_buttons(display_frame, highlight_duration=0.15) # Use the function defined earlier
 
-                # Pass the action flag (stored in last_action_for_draw) to draw_buttons
-                # draw_buttons function needs slight modification to accept this
-                # Let's assume draw_buttons checks against a global or passed state
-                # No, draw_buttons already uses the global `calibration_action` for *brief* highlight
-                # We need to update draw_buttons or use the `last_action_for_draw` state here
-                # Reverting draw_buttons to just use hover effect for simplicity now.
-                # The brief flash on click is handled by the global `calibration_action` logic reset above.
-                draw_buttons(display_frame) # Hover effect handled by mouse callback updating hovered_button_key
-
-                # --- Draw Calibration Status Message ---
-                # ... (remains the same) ...
+                # --- Draw Calibration Status Message / Auto-Calibrate Indicator ---
                 font_status, scale_status, thick_status = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                if last_calibrated_message and (time.time() - message_display_time < 3.0):
-                     (tw, th), _ = cv2.getTextSize(last_calibrated_message, font_status, scale_status, thick_status)
-                     tx = (actual_width - tw) // 2
-                     # Position below the lowest possible button + some margin, or below left debug text?
-                     # Let's try below buttons. Find max button Y + height.
-                     max_button_y = 0
-                     for btn in buttons.values():
-                         if 'rect' in btn:
-                             max_button_y = max(max_button_y, btn['rect'][1] + btn['rect'][3])
-                     ty = max_button_y + 20 # Position below buttons
+                status_message = ""
+                status_color = (0, 255, 255) # Default cyan
 
-                     draw_text_outlined(display_frame, last_calibrated_message, (tx, ty), font_status, scale_status, (0, 255, 255), bg_col, thick_status)
-                elif last_calibrated_message and (time.time() - message_display_time >= 3.0):
+                if is_auto_calibrating:
+                     status_message = "AUTO-CALIBRATING... Move through ranges! Click button again to STOP."
+                     status_color = (255, 150, 0) # Orange/Yellow
+                elif last_calibrated_message and (time.time() - message_display_time < 4.0): # Show longer
+                    status_message = last_calibrated_message
+                elif last_calibrated_message and (time.time() - message_display_time >= 4.0):
                     last_calibrated_message = "" # Clear message after timeout
+
+                if status_message:
+                     (tw, th), _ = cv2.getTextSize(status_message, font_status, scale_status, thick_status)
+                     tx = (actual_width - tw) // 2
+                     # Position below buttons or debug text
+                     max_button_y = 0
+                     for btn_key, btn_data in buttons.items():
+                         if 'rect' in btn_data: max_button_y = max(max_button_y, btn_data['rect'][1] + btn_data['rect'][3])
+                     ty = max(y_offset_ch3, max_button_y) + 25 # Adjusted position
+
+                     draw_text_outlined(display_frame, status_message, (tx, ty), font_status, scale_status, status_color, bg_col, thick_status)
 
 
                 # --- Show Frame ---
@@ -567,20 +611,26 @@ def main():
             # Exit Check & Save Shortcut
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'): break
-            elif key == ord('s'):
-                 print("Save triggered by keyboard ('s')")
-                 save_config(config, config_path)
-                 last_calibrated_message = f"Config saved to {config_path} (Key 's')"
-                 message_display_time = time.time()
+            elif key == ord('s'): # Keyboard shortcut to save config
+                 if is_auto_calibrating:
+                      print("Cannot save while Auto-Calibrating. Stop calibration first.")
+                      last_calibrated_message = "Stop Auto-Calibration before saving!"
+                      message_display_time = time.time()
+                 else:
+                      print("Save triggered by keyboard ('s')")
+                      save_config(config, config_path)
+                      last_calibrated_message = f"Config saved to {config_path} (Key 's')"
+                      message_display_time = time.time()
 
 
-    except KeyboardInterrupt: print("Keyboard interrupt received.")
+    except KeyboardInterrupt: print("\nKeyboard interrupt received.")
     finally:
         # Cleanup
         print("Shutting down...")
         if cap and cap.isOpened(): cap.release()
         if display_enabled: cv2.destroyAllWindows()
-        if tracker: tracker.close()
+        if hand_tracker: hand_tracker.close()
+        if face_tracker: face_tracker.close()
         if midi_sender: midi_sender.close()
         print("CamMIDI stopped.")
 
