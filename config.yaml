@@ -1,0 +1,195 @@
+# CamMIDI Configuration
+#
+# Calibration: Use UI buttons for Hand Pinch/Spread min/max ranges.
+# Manually edit face metric ranges (head_*, ear, mar, etc.) based on observed values.
+# Press 'Save Config' in the UI to save changes to this file.
+#
+# See DEFAULT_CONFIG in config_loader.py for all possible parameters.
+# Hand metrics ('centroid_*', 'hand_*', '*_curl', '*_spread', '*_pinch')
+# Face metrics ('head_*', '*_ear', 'mar', 'jaw_openness', '*_eyebrow_height')
+#
+# MIDI:
+# - port_name: Your virtual MIDI port.
+# - smoothing_factor: 0.0 (none) to 0.99 (max). Default: 0.6
+# - force_channel1_hand: Assigns Hand Ch1 based on handedness if two hands present.
+#
+# Mappings:
+# - Define 'source' (metric name), 'channel', 'cc', 'invert' (optional),
+#   'min_input'/'max_input' (REQUIRED for non-centroid sources).
+# - Hand mappings can use implicit Channel 2 logic (see docs/mapper.py).
+# - Face mappings typically use a dedicated channel (e.g., 3) or reuse 1/2.
+#
+camera:
+  index: 0
+  width: 800
+  height: 460
+mediapipe:
+  static_image_mode: false
+  max_num_hands: 2
+  min_detection_confidence: 0.6
+  min_tracking_confidence: 0.6
+  centroid_landmark_id: 0
+midi:
+  port_name: IAC Driver Bus 1
+  smoothing_factor: 0.6
+  force_channel1_hand: Right
+mappings:
+- source: centroid_x
+  channel: 1
+  cc: 1
+  invert: false
+- source: centroid_y
+  channel: 1
+  cc: 2
+  invert: true
+- source: hand_pitch
+  channel: 1
+  cc: 3
+  invert: false
+  min_input: -1.5707963267948966
+  max_input: 1.5707963267948966
+- source: hand_yaw
+  channel: 1
+  cc: 4
+  invert: false
+  min_input: -1.5707963267948966
+  max_input: 1.5707963267948966
+- source: hand_roll
+  channel: 1
+  cc: 5
+  invert: false
+  min_input: -1.5707963267948966
+  max_input: 1.5707963267948966
+- source: index_angle_curl
+  channel: 1
+  cc: 6
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: middle_angle_curl
+  channel: 1
+  cc: 7
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: ring_angle_curl
+  channel: 1
+  cc: 8
+  invert: true
+  min_input: 1.5
+  max_input: 3.1
+- source: pinky_angle_curl
+  channel: 1
+  cc: 9
+  invert: true
+  min_input: 1.7
+  max_input: 3.1
+- source: thumb_angle_curl
+  channel: 1
+  cc: 10
+  invert: true
+  min_input: 1.8
+  max_input: 3.0
+- source: index_middle_spread
+  channel: 1
+  cc: 11
+  invert: false
+  min_input: 0.0
+  max_input: 0.6283185307179586
+- source: middle_ring_spread
+  channel: 1
+  cc: 12
+  invert: false
+  min_input: 0.0
+  max_input: 0.5235987755982988
+- source: ring_pinky_spread
+  channel: 1
+  cc: 13
+  invert: false
+  min_input: 0.0
+  max_input: 0.5235987755982988
+- source: thumb_index_pinch
+  channel: 1
+  cc: 14
+  invert: true
+  min_input: 0.02
+  max_input: 0.25
+- source: thumb_middle_pinch
+  channel: 1
+  cc: 15
+  invert: true
+  min_input: 0.03
+  max_input: 0.3
+- source: thumb_ring_pinch
+  channel: 1
+  cc: 16
+  invert: true
+  min_input: 0.05
+  max_input: 0.35
+- source: thumb_pinky_pinch
+  channel: 1
+  cc: 17
+  invert: true
+  min_input: 0.07
+  max_input: 0.4
+- source: head_yaw
+  channel: 3
+  cc: 30
+  invert: false
+  min_input: -0.8
+  max_input: 0.8
+- source: head_pitch
+  channel: 3
+  cc: 31
+  invert: false
+  min_input: -0.6
+  max_input: 0.6
+- source: head_roll
+  channel: 3
+  cc: 32
+  invert: false
+  min_input: -0.5
+  max_input: 0.5
+- source: mar
+  channel: 3
+  cc: 33
+  invert: false
+  min_input: 0.0
+  max_input: 0.8
+- source: jaw_openness
+  channel: 3
+  cc: 34
+  invert: false
+  min_input: 0.0
+  max_input: 0.2
+- source: left_ear
+  channel: 3
+  cc: 35
+  invert: true
+  min_input: 0.15
+  max_input: 0.4
+- source: right_ear
+  channel: 3
+  cc: 36
+  invert: true
+  min_input: 0.15
+  max_input: 0.4
+- source: left_eyebrow_height
+  channel: 3
+  cc: 37
+  invert: false
+  min_input: 0.05
+  max_input: 0.25
+- source: right_eyebrow_height
+  channel: 3
+  cc: 38
+  invert: false
+  min_input: 0.05
+  max_input: 0.25
+display:
+  show_window: true
+  draw_landmarks: true
+  draw_face_tesselation: true
+  draw_connections: true
+  show_fps: true
+  flip_horizontal: true

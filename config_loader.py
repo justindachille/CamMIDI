@@ -1,4 +1,3 @@
-# config_loader.py
 import yaml
 import os
 import numpy as np
@@ -305,13 +304,15 @@ def save_config(config, config_path='config.yaml'):
                     for key, value in mapping.items():
                         if isinstance(value, np.integer): mapping[key] = int(value)
                         elif isinstance(value, np.floating):
+                            # Handle potential inf/nan values before conversion
                             if np.isinf(value) or np.isnan(value):
-                                print(f"Warning: Invalid value ({value}) found for '{key}' in mapping '{mapping.get('source', 'Unknown')}'. Replacing with 0.")
+                                print(f"Warning: Invalid numpy float value ({value}) found for '{key}' in mapping '{mapping.get('source', 'Unknown')}'. Replacing with 0.0.")
                                 mapping[key] = 0.0
                             else:
                                 mapping[key] = float(value)
                         elif isinstance(value, float) and (np.isinf(value) or np.isnan(value)):
-                            print(f"Warning: Invalid float value ({value}) found for '{key}' in mapping '{mapping.get('source', 'Unknown')}'. Replacing with 0.")
+                            # Also handle standard python floats that might be inf/nan
+                            print(f"Warning: Invalid float value ({value}) found for '{key}' in mapping '{mapping.get('source', 'Unknown')}'. Replacing with 0.0.")
                             mapping[key] = 0.0
          with open(config_path, 'w') as f:
              f.write(comment)

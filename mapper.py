@@ -1,4 +1,3 @@
-# mapper.py
 import numpy as np
 import warnings
 
@@ -14,51 +13,46 @@ class MidiMapper:
              print(f"Warning: Invalid 'force_channel1_hand' value '{self.force_channel1_hand}'. Defaulting to 'None'.")
              self.force_channel1_hand = "None"
 
-        # Camera dimensions are updated dynamically in calculate_midi now
+        # Camera dimensions are updated dynamically in calculate_midi
         self.camera_width = config.get('camera', {}).get('width', 640)
         self.camera_height = config.get('camera', {}).get('height', 480)
 
-        self._smoothed_values = {} # Store {smooth_key: smoothed_value}
+        # Store {smooth_key: smoothed_value}
+        self._smoothed_values = {}
 
-        # --- Define potential face sources BEFORE calling update_explicit ---
+        # Define potential face sources BEFORE calling update_explicit
         self.potential_face_sources = {
             'head_pitch', 'head_yaw', 'head_roll',
             'left_ear', 'right_ear', 'mar', 'jaw_openness',
             'left_eyebrow_height', 'right_eyebrow_height'
             # Add others if defined in face_tracker
         }
-        # --- Moved definition above ---
 
         # Pre-calculate sources explicitly defined for channel 2 (Hand specific)
         self.explicit_ch2_sources = set()
         if self.max_hands > 1:
-             self._update_explicit_ch2_sources() # Calculate based on initial mappings
+             # Calculate based on initial mappings
+             self._update_explicit_ch2_sources()
 
-
-        # Also consider any source name starting with 'face_' or 'head_'
-        # This check happens within calculate_midi
+        # Face sources are also checked by name in calculate_midi
 
         print("MidiMapper initialized.")
         print(f" Force Channel 1 Hand: {self.force_channel1_hand}")
         if self.max_hands > 1:
             print(f" Implicit Channel 2 Hand mapping enabled (uses same CC as Channel 1).")
             print(f"  - Explicit Hand Ch2 sources (override implicit): {self.explicit_ch2_sources or 'None'}")
-        # Commenting out noisy print:
-        # print(f" Known face metric source names: {self.potential_face_sources}")
+        # print(f" Known face metric source names: {self.potential_face_sources}") # Can be noisy
 
-    # Rest of the MidiMapper class remains the same...
-    # _update_explicit_ch2_sources, _scale_value, _apply_smoothing,
-    # _get_value_and_smooth, calculate_midi, update_mappings
 
     def _update_explicit_ch2_sources(self):
         """Helper to recalculate the set of sources explicitly mapped to channel 2."""
         self.explicit_ch2_sources.clear()
         for mapping in self.mappings:
-            if not isinstance(mapping, dict): continue # Ensure mapping is a dict
+            if not isinstance(mapping, dict): continue
 
             # Only consider hand sources for implicit/explicit Ch2 logic for now
             source = mapping.get('source', '')
-            if not source: continue # Skip if no source defined
+            if not source: continue
 
             # Check if it's likely a face source
             is_potential_face_source = (source in self.potential_face_sources or
@@ -70,9 +64,8 @@ class MidiMapper:
                 if mapping.get('channel') == 2:
                     self.explicit_ch2_sources.add(source)
 
-    # --- scale_value function ---
     def _scale_value(self, value, min_in, max_in, min_out=0, max_out=127, invert=False):
-        if value is None: return (min_out + max_out) // 2 # Handle None input early
+        if value is None: return (min_out + max_out) // 2
         # Ensure min/max are valid numbers before conversion
         if min_in is None or max_in is None: return (min_out + max_out) // 2
 
@@ -81,15 +74,14 @@ class MidiMapper:
             min_in_f = float(min_in)
             max_in_f = float(max_in)
         except (ValueError, TypeError):
-            return (min_out + max_out) // 2 # Return midpoint if conversion fails
+            return (min_out + max_out) // 2
 
-        if abs(max_in_f - min_in_f) < 1e-9: # Use epsilon for float comparison
+        if abs(max_in_f - min_in_f) < 1e-9:
             return min_out if not invert else max_out
 
         # Clamp input value
         value_f = max(min_in_f, min(max_in_f, value_f))
 
-        # Perform scaling
         scaled = (value_f - min_in_f) / (max_in_f - min_in_f) * (max_out - min_out) + min_out
 
         if invert:
@@ -98,19 +90,21 @@ class MidiMapper:
         # Clamp output and round to integer
         return int(round(max(min_out, min(max_out, scaled))))
 
-    # --- apply_smoothing function ---
     def _apply_smoothing(self, current_value, smooth_key):
-        if self.smoothing_factor <= 0: return current_value # No smoothing
-        if self.smoothing_factor >= 1: # Store last value, effectively no smoothing but keeps state
+        if self.smoothing_factor <= 0: return current_value
+        # Store last value, effectively no smoothing but keeps state
+        if self.smoothing_factor >= 1:
              if smooth_key not in self._smoothed_values: self._smoothed_values[smooth_key] = current_value
              return self._smoothed_values[smooth_key]
 
         try:
             current_value_float = float(current_value)
         except (ValueError, TypeError):
-            return current_value # Return original if not numeric
+            # Return original if not numeric
+            return current_value
 
-        alpha = 1.0 - self.smoothing_factor # Smoothing coefficient for new value (closer to 0 = more smoothing)
+        # Smoothing coefficient for new value (closer to 0 = more smoothing)
+        alpha = 1.0 - self.smoothing_factor
         previous_smoothed = self._smoothed_values.get(smooth_key)
 
         # Initialize previous value if not present or invalid
@@ -118,26 +112,27 @@ class MidiMapper:
             previous_smoothed = current_value_float
 
         try:
-            previous_smoothed_float = float(previous_smoothed) # Ensure previous is float for calculation
+            # Ensure previous is float for calculation
+            previous_smoothed_float = float(previous_smoothed)
             smoothed = alpha * current_value_float + (1.0 - alpha) * previous_smoothed_float
         except (ValueError, TypeError):
-            smoothed = current_value_float # Fallback if previous value is problematic
+            # Fallback if previous value is problematic
+            smoothed = current_value_float
 
         self._smoothed_values[smooth_key] = smoothed
-        return smoothed # Return the float smoothed value, round in the calling function
+        # Return the float smoothed value, round in the calling function
+        return smoothed
 
-    # --- get_value_and_smooth function ---
     def _get_value_and_smooth(self, source_data_dict, mapping_params, smooth_key):
         """Gets raw value from source dict, scales, smooths, and returns final MIDI int."""
         source_name = mapping_params.get('source')
         raw_value = source_data_dict.get(source_name)
 
         if raw_value is None:
-            return None # Source not found in data
+            return None
 
         # --- Get min/max Input ---
-        # Define defaults carefully
-        default_min_input, default_max_input = None, None # Start with None
+        default_min_input, default_max_input = None, None
         if mapping_params.get('min_input') is not None and mapping_params.get('max_input') is not None:
             min_input = mapping_params['min_input']
             max_input = mapping_params['max_input']
@@ -158,7 +153,8 @@ class MidiMapper:
             elif source_name == 'jaw_openness': min_input, max_input = 0.0, 0.2
             elif 'eyebrow' in source_name: min_input, max_input = 0.05, 0.25
             else:
-                min_input, max_input = 0.0, 1.0 # Generic fallback if name not recognized
+                # Generic fallback if name not recognized
+                min_input, max_input = 0.0, 1.0
 
             # Apply overrides from mapping_params if they exist (even if only one exists)
             min_input = mapping_params.get('min_input', min_input)
@@ -181,7 +177,6 @@ class MidiMapper:
              print(f"Warning: Missing min/max_input for source '{source_name}'. Cannot scale.")
              return None
 
-
         # Scale the raw value to 0-127 range (returns int)
         scaled_value_int = self._scale_value(
             raw_value,
@@ -189,7 +184,8 @@ class MidiMapper:
             max_input,
             invert=mapping_params.get('invert', False)
         )
-        if scaled_value_int is None: return None # Scaling failed
+        # Scaling failed
+        if scaled_value_int is None: return None
 
         # Apply smoothing to the scaled (0-127) value (returns float)
         smoothed_value_float = self._apply_smoothing(float(scaled_value_int), smooth_key)
@@ -198,8 +194,7 @@ class MidiMapper:
         midi_value = int(round(smoothed_value_float))
         return max(0, min(127, midi_value))
 
-    # --- calculate_midi function ---
-    # (No changes needed here based on the bug report)
+
     def calculate_midi(self, all_hands_data, face_data, frame_width, frame_height):
         """
         Calculates MIDI messages based on hand and face data.
@@ -217,7 +212,6 @@ class MidiMapper:
         hand_for_ch1_index, hand_data_ch1 = -1, None
         hand_for_ch2_index, hand_data_ch2 = -1, None
 
-        # Hand assignment logic (remains same)
         if num_detected_hands == 1:
             hand_for_ch1_index, hand_data_ch1 = detected_hands[0]
         elif num_detected_hands >= 2:
@@ -233,7 +227,7 @@ class MidiMapper:
                 if hand1_label == 'Right': hand_for_ch1_index, hand_data_ch1, hand_for_ch2_index, hand_data_ch2 = hand1_idx, hand1_data, hand2_idx, hand2_data
                 elif hand2_label == 'Right': hand_for_ch1_index, hand_data_ch1, hand_for_ch2_index, hand_data_ch2 = hand2_idx, hand2_data, hand1_idx, hand1_data
                 else: hand_for_ch1_index, hand_data_ch1, hand_for_ch2_index, hand_data_ch2 = hand1_idx, hand1_data, hand2_idx, hand2_data
-            else: # "None" or invalid
+            else:
                 hand_for_ch1_index, hand_data_ch1, hand_for_ch2_index, hand_data_ch2 = hand1_idx, hand1_data, hand2_idx, hand2_data
 
         can_do_implicit = self.max_hands > 1 and hand_data_ch1 is not None and hand_data_ch2 is not None
@@ -250,7 +244,7 @@ class MidiMapper:
                               source_name.startswith('face_') or
                               source_name.startswith('head_'))
 
-            # --- Process Face Sources ---
+            # Process Face Sources
             if is_face_source:
                 if face_available:
                     smooth_key_face = f"face0_map{mapping_index}_ch{mapping_channel}_{source_name}"
@@ -258,7 +252,7 @@ class MidiMapper:
                     if midi_value_face is not None:
                         midi_messages[(mapping_channel, mapping_cc)] = {'value': midi_value_face, 'source_type': 'face', 'source_index': 0}
 
-            # --- Process Hand Sources ---
+            # Process Hand Sources
             else:
                 # Channel 1 Hand
                 if mapping_channel == 1 and hand_data_ch1 is not None:
@@ -289,8 +283,10 @@ class MidiMapper:
     def update_mappings(self, new_mappings):
         """Updates the mappings used by the mapper."""
         self.mappings = new_mappings
-        self._update_explicit_ch2_sources() # Recalculate using the corrected method
+        # Recalculate which sources are explicitly mapped to Ch2
+        self._update_explicit_ch2_sources()
         print("MidiMapper mappings updated.")
         print(f"  - New Explicit Hand Ch2 sources: {self.explicit_ch2_sources or 'None'}")
+        # Smoothed values are cleared to avoid using old state with new mappings
         self._smoothed_values.clear()
         print("  - Smoothed values cleared.")

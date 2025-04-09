@@ -16,7 +16,7 @@ def calculate_vector(p1, p2):
 
 # --- Face Specific Landmark IDs ---
 # These are approximate IDs based on the MediaPipe Face Mesh documentation
-# See: https://developers.google.com/mediapipe/solutions/vision/face_landmarker/face_landmarks
+# See: https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker
 LEFT_EYE_IDS = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE_IDS = [33, 160, 158, 133, 153, 144]
 MOUTH_OUTER_IDS = [61, 291, 0, 17, 37, 78, 146, 308, 405, 181, 39, 80] # Approximate outer lip contour
@@ -68,7 +68,7 @@ class FaceTracker:
         self.drawing_spec_landmarks = self.mpDraw.DrawingSpec(thickness=1, circle_radius=1, color=(0,200,0))
         self.drawing_spec_contours = self.mpDraw.DrawingSpec(thickness=1, circle_radius=1, color=(80,180,80))
         self.drawing_spec_irises = self.mpDraw.DrawingSpec(thickness=1, circle_radius=1, color=(0,220,220))
-        self.drawing_spec_tesselation = self.mpDraw.DrawingSpec(thickness=1, circle_radius=1, color=(192, 192, 192)) 
+        self.drawing_spec_tesselation = self.mpDraw.DrawingSpec(thickness=1, circle_radius=1, color=(192, 192, 192))
 
         self.results = None
         self.frame_height = self.camera_config.get('height', 480) # Initial estimates
@@ -192,14 +192,12 @@ class FaceTracker:
         if self.display_config.get('flip_horizontal', True):
             frame = cv2.flip(frame, 1)
 
-        # Convert BGR image to RGB for MediaPipe
         imgRGB = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         imgRGB.flags.writeable = False # Optimization
 
-        # Process the frame
         self.results = self.face_mesh.process(imgRGB)
 
-        imgRGB.flags.writeable = True # Make writable again
+        imgRGB.flags.writeable = True
 
         # Initialize tracking data (only supports one face for now)
         face_data = self._get_default_tracking_data()
@@ -252,7 +250,6 @@ class FaceTracker:
                         MODEL_POINTS, image_points, self.camera_matrix, self.dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE) # Or SOLVEPNP_SQPNP
 
                     if success:
-                        # Convert rotation vector to rotation matrix
                         rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
 
                         # Combine with camera projection matrix (useful for projecting 3D points)
@@ -290,7 +287,6 @@ class FaceTracker:
                 # print(f"Warning: Could not calculate face metrics: {e}")
                 pass # Keep defaults if any calculation fails
 
-        # Return the processed (potentially flipped) frame and the face tracking data
         return frame, face_data
 
     def draw_visuals(self, frame, face_data):
